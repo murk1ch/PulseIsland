@@ -1,0 +1,371 @@
+<Window x:Class="PulseIsland.UI.AiAssistantPopupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        Width="530">
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <Geometry x:Key="CloseIconGeometry">M 1,1 L 9,9 M 9,1 L 1,9</Geometry>
+        <Geometry x:Key="AiStarGeometry">M 6,0.5 L 7.4,4.6 L 11.5,6 L 7.4,7.4 L 6,11.5 L 4.6,7.4 L 0.5,6 L 4.6,4.6 Z</Geometry>
+
+        <!-- Slim Dark Glass ScrollBar matching PulseIsland UI -->
+        <Style x:Key="AiPopupScrollThumbStyle" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="ThumbBorder"
+                                Background="{DynamicResource ThemeScrollThumbBrush}"
+                                CornerRadius="3"
+                                Margin="2,0" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeScrollThumbHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeAccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="Width" Value="7" />
+            <Setter Property="MinWidth" Value="7" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Border Background="{DynamicResource ThemeScrollTrackBrush}" CornerRadius="3.5" Margin="1.5,2" />
+                            <Track x:Name="PART_Track" IsDirectionReversed="True" Margin="0,2">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" IsHitTestVisible="False" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource AiPopupScrollThumbStyle}" />
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" IsHitTestVisible="False" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="GlassActionButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextPrimaryBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ThemeButtonBgBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeCardBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BtnBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="11"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBorder" Property="Background" Value="{DynamicResource ThemeButtonHoverBgBrush}" />
+                                <Setter TargetName="BtnBorder" Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BtnBorder" Property="Background" Value="{DynamicResource ThemeButtonPressedBgBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="RootPopupContainer"
+          Margin="16"
+          RenderTransformOrigin="0.5,0.5">
+        <Grid.RenderTransform>
+            <ScaleTransform x:Name="PopupScaleTransform" ScaleX="0.92" ScaleY="0.92" />
+        </Grid.RenderTransform>
+        <Grid.Effect>
+            <BlurEffect x:Name="PopupBlurEffect" Radius="8" />
+        </Grid.Effect>
+
+        <!-- Ambient Shadow / Breathing AI Aura -->
+        <Border x:Name="AmbientShadowBorder"
+                CornerRadius="22"
+                Margin="-2"
+                Background="#70000000"
+                IsHitTestVisible="False">
+            <Border.Effect>
+                <BlurEffect Radius="18" />
+            </Border.Effect>
+        </Border>
+
+        <!-- Main Frosted Glass Widget (drag header/background to move) -->
+        <Border x:Name="MainPopupCard"
+                Padding="16,14"
+                CornerRadius="20"
+                BorderThickness="1"
+                Background="{DynamicResource ThemeSurfaceBrush}"
+                BorderBrush="{DynamicResource ThemeGlassBorderBrush}"
+                MouseLeftButtonDown="OnPopupMouseLeftButtonDown">
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Top Specular Glass Reflection -->
+                <Border Grid.Row="0"
+                        Height="14"
+                        VerticalAlignment="Top"
+                        Margin="-10,-10,-10,0"
+                        CornerRadius="16,16,0,0"
+                        Background="{DynamicResource ThemeReflectionBrush}"
+                        IsHitTestVisible="False" />
+
+                <!-- Row 0: Header -->
+                <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Padding="10,4"
+                                CornerRadius="10"
+                                Background="{DynamicResource ThemeHighlightBrush}"
+                                BorderBrush="{DynamicResource ThemeAccentBrush}"
+                                BorderThickness="1">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Path Data="{StaticResource AiStarGeometry}"
+                                      Fill="{DynamicResource ThemeAccentBrush}"
+                                      Width="10" Height="10"
+                                      Stretch="Uniform"
+                                      Margin="0,0,6,0"
+                                      VerticalAlignment="Center" />
+                                <TextBlock Text="Qwen 2.5 3B"
+                                           Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                        <Border Padding="8,4"
+                                CornerRadius="9"
+                                Margin="6,0,0,0"
+                                Background="{DynamicResource ThemeControlBgBrush}"
+                                BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                BorderThickness="1"
+                                VerticalAlignment="Center">
+                            <TextBlock x:Name="BackendBadgeText"
+                                       Text="Auto"
+                                       Foreground="{DynamicResource ThemeAccentBrush}"
+                                       FontSize="10"
+                                       FontWeight="Bold" />
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="{DynamicResource Loc_Clear}"
+                                Click="OnClearClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="10,4"
+                                Margin="0,0,6,0"
+                                FontSize="11" />
+                        <Button x:Name="CopyButton"
+                                Content="{DynamicResource Loc_Copy}"
+                                Click="OnCopyClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="10,4"
+                                Margin="0,0,6,0"
+                                FontSize="11" />
+                        <Button Click="OnCloseClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Width="26"
+                                Height="26"
+                                Padding="0"
+                                ToolTip="{DynamicResource Loc_CloseEsc}">
+                            <Path Data="{StaticResource CloseIconGeometry}"
+                                  Stroke="{DynamicResource ThemeTextPrimaryBrush}"
+                                  StrokeThickness="1.5"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Width="9" Height="9"
+                                  Stretch="Uniform" />
+                        </Button>
+                    </StackPanel>
+                </DockPanel>
+
+                <!-- Row 1: Quick Action Chips + Prompt Input -->
+                <StackPanel Grid.Row="1" Margin="0,0,0,10">
+                    <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="{DynamicResource Loc_Ai_WeatherBtn}"
+                                Click="OnWeatherClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="11,5"
+                                FontSize="11.5"
+                                Margin="0,0,6,0" />
+                        <Button Content="{DynamicResource Loc_Ai_SummarizeClipBtn}"
+                                Click="OnSummarizeClipboardClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="11,5"
+                                FontSize="11.5"
+                                Margin="0,0,6,0" />
+                        <Button Content="{DynamicResource Loc_Ai_TranslateAiBtn}"
+                                Click="OnTranslateClipboardClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="11,5"
+                                FontSize="11.5" />
+                    </WrapPanel>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0"
+                                Background="{DynamicResource ThemeControlBgBrush}"
+                                BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="12"
+                                Padding="11,7"
+                                Margin="0,0,8,0">
+                            <Grid>
+                                <TextBox x:Name="PromptInputBox"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                         CaretBrush="{DynamicResource ThemeAccentBrush}"
+                                         FontSize="12.5"
+                                         AcceptsReturn="False"
+                                         VerticalContentAlignment="Center"
+                                         KeyDown="OnPromptKeyDown" />
+                                <TextBlock Text="{DynamicResource Loc_Ai_PromptPlaceholder}"
+                                           Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                           FontSize="11.5"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ElementName=PromptInputBox, Path=Text}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                        </Border>
+                        <Button x:Name="AskButton"
+                                Grid.Column="1"
+                                Content="{DynamicResource Loc_Ai_AskBtn}"
+                                Click="OnAskClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="14,7"
+                                FontSize="12" />
+                        <Button x:Name="StopButton"
+                                Grid.Column="1"
+                                Content="{DynamicResource Loc_Ai_StopBtn}"
+                                Visibility="Collapsed"
+                                Click="OnStopClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="14,7"
+                                FontSize="12" />
+                    </Grid>
+                </StackPanel>
+
+                <!-- Row 2: Shimmer Bar during Token Generation -->
+                <Border x:Name="ThinkingBarTrack"
+                        Grid.Row="2"
+                        Visibility="Collapsed"
+                        Height="3"
+                        CornerRadius="1.5"
+                        ClipToBounds="True"
+                        Background="{DynamicResource ThemeControlBgBrush}"
+                        Margin="0,0,0,8">
+                    <Border x:Name="ThinkingShimmerBar"
+                            Width="130"
+                            HorizontalAlignment="Left"
+                            CornerRadius="1.5"
+                            Background="{DynamicResource ThemeAccentGradientBrush}">
+                        <Border.RenderTransform>
+                            <TranslateTransform x:Name="ThinkingShimmerTransform" X="-130" />
+                        </Border.RenderTransform>
+                    </Border>
+                </Border>
+
+                <!-- Row 3: Framed Selectable AI Answer Card -->
+                <Border Grid.Row="3"
+                        Background="{DynamicResource ThemeCardBgBrush}"
+                        BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="14"
+                        Padding="12,10">
+                    <StackPanel>
+                        <TextBlock x:Name="StatusLineText"
+                                   Text="{DynamicResource Loc_Ai_Ready}"
+                                   Foreground="{DynamicResource ThemeSectionHeaderBrush}"
+                                   FontSize="10.5"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,6" />
+
+                        <ScrollViewer x:Name="AnswerScrollViewer"
+                                      MaxHeight="340"
+                                      VerticalScrollBarVisibility="Auto">
+                            <TextBox x:Name="AnswerTextBox"
+                                     IsReadOnly="True"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     Padding="0,0,6,0"
+                                     TextWrapping="Wrap"
+                                     Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                     SelectionBrush="{DynamicResource ThemeAccentBrush}"
+                                     FontSize="13.5"
+                                     FontFamily="Segoe UI"
+                                     Cursor="IBeam" />
+                        </ScrollViewer>
+                    </StackPanel>
+                </Border>
+
+                <!-- Row 4: Source Text Snippet -->
+                <Border x:Name="SourceTextBorder"
+                        Grid.Row="4"
+                        Visibility="Collapsed"
+                        Margin="0,10,0,0"
+                        Padding="10,7"
+                        CornerRadius="12"
+                        Background="{DynamicResource ThemeControlBgBrush}"
+                        BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                        BorderThickness="1">
+                    <TextBlock x:Name="SourceTextBlock"
+                               TextWrapping="Wrap"
+                               MaxHeight="60"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                               FontSize="11"
+                               FontFamily="Segoe UI" />
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

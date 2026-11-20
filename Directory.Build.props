@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep NuGet restore cache strictly inside the repository root -->
+    <RestorePackagesPath>$(MSBuildThisFileDirectory).nuget\packages</RestorePackagesPath>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,253 @@
+using System.Runtime.InteropServices;
+
+namespace PulseIsland.Audio;
+
+/// <summary>
+/// Native Windows Core Audio (WASAPI) COM interop declarations for zero-dependency loopback capture.
+/// </summary>
+internal static class WasapiComInterop
+{
+    public const int CLSCTX_ALL = 0x17;
+    public const int AUDCLNT_SHAREMODE_SHARED = 0;
+    public const int AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000;
+    public const int AUDCLNT_BUFFERFLAGS_SILENT = 0x2;
+
+    public const ushort WAVE_FORMAT_PCM = 1;
+    public const ushort WAVE_FORMAT_IEEE_FLOAT = 3;
+    public const ushort WAVE_FORMAT_EXTENSIBLE = 0xFFFE;
+
+    public static readonly Guid KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = new("00000003-0000-0010-8000-00aa00389b71");
+    public static readonly Guid KSDATAFORMAT_SUBTYPE_PCM = new("00000001-0000-0010-8000-00aa00389b71");
+
+    public static readonly Guid IID_IAudioClient = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
+    public static readonly Guid IID_IAudioCaptureClient = new("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
+    public static readonly Guid IID_IAudioEndpointVolume = new("5CDF2C82-841E-4546-9722-0CF74078229A");
+    public static readonly Guid IID_IAudioSessionManager2 = new("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
+
+    public enum EDataFlow
+    {
+        eRender = 0,
+        eCapture = 1,
+        eAll = 2
+    }
+
+    public enum ERole
+    {
+        eConsole = 0,
+        eMultimedia = 1,
+        eCommunications = 2
+    }
+
+    // Pack = 1 is critical: native WAVEFORMATEX in mmreg.h is 18 bytes (not 20 bytes),
+    // so WAVEFORMATEXTENSIBLE fields start at byte offset 18 and SubFormat is at byte offset 24.
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct WAVEFORMATEX
+    {
+        public ushort wFormatTag;
+        public ushort nChannels;
+        public uint nSamplesPerSec;
+        public uint nAvgBytesPerSec;
+        public ushort nBlockAlign;
+        public ushort wBitsPerSample;
+        public ushort cbSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct WAVEFORMATEXTENSIBLE
+    {
+        public WAVEFORMATEX Format;
+        public ushort wValidBitsPerSample;
+        public uint dwChannelMask;
+        public Guid SubFormat;
+    }
+
+    [ComImport]
+    [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    public class MMDeviceEnumeratorComObject
+    {
+    }
+
+    [ComImport]
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMDeviceEnumerator
+    {
+        int EnumAudioEndpoints(EDataFlow dataFlow, uint dwStateMask, out IMMDeviceCollection ppDevices);
+        int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice ppEndpoint);
+        int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string pwstrId, out IMMDevice ppDevice);
+        int RegisterEndpointNotificationCallback(IMMNotificationClient pClient);
+        int UnregisterEndpointNotificationCallback(IMMNotificationClient pClient);
+    }
+
+    [ComImport]
+    [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMDeviceCollection
+    {
+        int GetCount(out uint pcDevices);
+        int Item(uint nDevice, out IMMDevice ppDevice);
+    }
+
+    [ComImport]
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMDevice
+    {
+        int Activate(ref Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+        int OpenPropertyStore(int stgmAccess, out IntPtr ppProperties);
+        int GetId([MarshalAs(UnmanagedType.LPWStr)] out string ppstrId);
+        int GetState(out uint pdwState);
+    }
+
+    [ComImport]
+    [Guid("7991EEC9-7E89-4D85-8390-6C703CEC60C0")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMNotificationClient
+    {
+        void OnDeviceStateChanged([MarshalAs(UnmanagedType.LPWStr)] string pwstrDeviceId, uint dwNewState);
+        void OnDeviceAdded([MarshalAs(UnmanagedType.LPWStr)] string pwstrDeviceId);
+        void OnDeviceRemoved([MarshalAs(UnmanagedType.LPWStr)] string pwstrDeviceId);
+        void OnDefaultDeviceChanged(EDataFlow flow, ERole role, [MarshalAs(UnmanagedType.LPWStr)] string pwstrDefaultDeviceId);
+        void OnPropertyValueChanged([MarshalAs(UnmanagedType.LPWStr)] string pwstrDeviceId, PropertyKey key);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PropertyKey
+    {
+        public Guid fmtid;
+        public uint pid;
+    }
+
+    [ComImport]
+    [Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioClient
+    {
+        int Initialize(int shareMode, int streamFlags, long hnsBufferDuration, long hnsPeriodicity, IntPtr pFormat, IntPtr audioSessionGuid);
+        int GetBufferSize(out uint pNumBufferFrames);
+        int GetStreamLatency(out long phnsLatency);
+        int GetCurrentPadding(out uint pNumPaddingFrames);
+        int IsFormatSupported(int shareMode, IntPtr pFormat, out IntPtr ppClosestMatch);
+        int GetMixFormat(out IntPtr ppDeviceFormat);
+        int GetDevicePeriod(out long phnsDefaultDevicePeriod, out long phnsMinimumDevicePeriod);
+        int Start();
+        int Stop();
+        int Reset();
+        int SetEventHandle(IntPtr eventHandle);
+        int GetService(ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object ppv);
+    }
+
+    [ComImport]
+    [Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioCaptureClient
+    {
+        int GetBuffer(out IntPtr ppData, out uint pNumFramesToRead, out uint pdwFlags, out ulong pu64DevicePosition, out ulong pu64QPCPosition);
+        int ReleaseBuffer(uint numFramesRead);
+        int GetNextPacketSize(out uint pNumFramesInNextPacket);
+    }
+
+    [ComImport]
+    [Guid("657804FA-D6AD-4496-8A60-352752AF4F89")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioEndpointVolumeCallback
+    {
+        int OnNotify(IntPtr pNotifyData);
+    }
+
+    [ComImport]
+    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioEndpointVolume
+    {
+        int RegisterControlChangeNotify(IAudioEndpointVolumeCallback pNotify);
+        int UnregisterControlChangeNotify(IAudioEndpointVolumeCallback pNotify);
+        int GetChannelCount(out uint pnChannelCount);
+        int SetMasterVolumeLevel(float fLevelDB, ref Guid pguidEventContext);
+        int SetMasterVolumeLevelScalar(float fLevel, ref Guid pguidEventContext);
+        int GetMasterVolumeLevel(out float pfLevelDB);
+        int GetMasterVolumeLevelScalar(out float pfLevel);
+        int SetChannelVolumeLevel(uint nChannel, float fLevelDB, ref Guid pguidEventContext);
+        int SetChannelVolumeLevelScalar(uint nChannel, float fLevel, ref Guid pguidEventContext);
+        int GetChannelVolumeLevel(uint nChannel, out float pfLevelDB);
+        int GetChannelVolumeLevelScalar(uint nChannel, out float pfLevel);
+        int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, ref Guid pguidEventContext);
+        int GetMute([MarshalAs(UnmanagedType.Bool)] out bool pbMute);
+    }
+
+    [ComImport]
+    [Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioMeterInformation
+    {
+        int GetPeakValue(out float pfPeak);
+        int GetMeteringChannelCount(out uint pnChannelCount);
+        int GetChannelsPeakValues(uint u32ChannelCount, IntPtr afPeakValues);
+    }
+
+    [ComImport]
+    [Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioSessionControl
+    {
+        int GetState(out int pRetVal);
+        int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string value, ref Guid eventContext);
+        int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string value, ref Guid eventContext);
+        int GetGroupingParam(out Guid pRetVal);
+        int SetGroupingParam(ref Guid @override, ref Guid eventContext);
+        int RegisterAudioSessionNotification(IntPtr newNotifications);
+        int UnregisterAudioSessionNotification(IntPtr newNotifications);
+    }
+
+    [ComImport]
+    [Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioSessionControl2
+    {
+        // IAudioSessionControl methods
+        int GetState(out int pRetVal);
+        int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string value, ref Guid eventContext);
+        int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string value, ref Guid eventContext);
+        int GetGroupingParam(out Guid pRetVal);
+        int SetGroupingParam(ref Guid @override, ref Guid eventContext);
+        int RegisterAudioSessionNotification(IntPtr newNotifications);
+        int UnregisterAudioSessionNotification(IntPtr newNotifications);
+
+        // IAudioSessionControl2 methods
+        int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int GetProcessId(out uint pRetVal);
+        int IsSystemSoundsSession();
+        int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
+    }
+
+    [ComImport]
+    [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioSessionEnumerator
+    {
+        int GetCount(out int sessionCount);
+        int GetSession(int sessionCount, out IAudioSessionControl session);
+    }
+
+    [ComImport]
+    [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioSessionManager2
+    {
+        // IAudioSessionManager methods
+        int GetAudioSessionControl(ref Guid audioSessionGuid, uint streamFlags, out IAudioSessionControl sessionControl);
+        int GetSimpleAudioVolume(ref Guid audioSessionGuid, uint streamFlags, [MarshalAs(UnmanagedType.IUnknown)] out object audioVolume);
+
+        // IAudioSessionManager2 methods
+        int GetSessionEnumerator(out IAudioSessionEnumerator sessionEnum);
+        int RegisterSessionNotification(IntPtr sessionNotification);
+        int UnregisterSessionNotification(IntPtr sessionNotification);
+        int RegisterDuckNotification([MarshalAs(UnmanagedType.LPWStr)] string sessionID, IntPtr duckNotification);
+        int UnregisterDuckNotification(IntPtr duckNotification);
+    }
+}

@@ -1,0 +1,69 @@
+name: Build & Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach build artifacts to (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build solution
+        shell: pwsh
+        run: |
+          dotnet build PulseIsland.sln -c Debug
+
+      - name: Run unit & integration tests (23 tests)
+        shell: pwsh
+        run: |
+          dotnet run --project tests\PulseIsland.Tests\PulseIsland.Tests.csproj --no-restore -c Release
+
+      - name: Publish Portable (framework-dependent) & Standalone (self-contained win-x64)
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:INPUT_TAG }
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = 'v1.0.0' }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          New-Item -ItemType Directory -Force -Path ".\release_out\portable",".\release_out\standalone",".\release_out\zips" | Out-Null
+
+          # 1. Portable (lightweight, requires .NET 8 Desktop Runtime)
+          dotnet publish src\PulseIsland\PulseIsland.csproj --no-restore -c Release -o ".\release_out\portable"
+          Compress-Archive -Path ".\release_out\portable\*" -DestinationPath ".\release_out\zips\PulseIsland-$tag-win-x64-portable.zip" -CompressionLevel Optimal
+
+          # 2. Standalone (self-contained single-file win-x64, zero .NET install required)
+          dotnet publish src\PulseIsland\PulseIsland.csproj -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o ".\release_out\standalone"
+          Compress-Archive -Path ".\release_out\standalone\*" -DestinationPath ".\release_out\zips\PulseIsland-$tag-win-x64-standalone.zip" -CompressionLevel Optimal
+
+      - name: Attach release archives to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            release_out/zips/PulseIsland-*-win-x64-portable.zip
+            release_out/zips/PulseIsland-*-win-x64-standalone.zip

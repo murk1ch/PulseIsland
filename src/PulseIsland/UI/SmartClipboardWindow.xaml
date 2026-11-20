@@ -1,0 +1,289 @@
+<Window x:Class="PulseIsland.UI.SmartClipboardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource Loc_Clip_WindowTitle}"
+        Width="490"
+        Height="540"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Loaded="OnWindowLoaded"
+        MouseLeftButtonDown="OnWindowMouseLeftButtonDown"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
+
+    <Window.Resources>
+        <Geometry x:Key="CloseIconGeometry">M 1,1 L 10,10 M 10,1 L 1,10</Geometry>
+        <Geometry x:Key="SearchIconGeometry">M 5,1 A 4,4 0 1 0 5,9 A 4,4 0 1 0 5,1 Z M 8,8 L 11,11</Geometry>
+        <Geometry x:Key="PinIconGeometry">M 4,1 L 8,1 L 8,5 L 10,7 L 6.5,7 L 6.5,11 L 5.5,11 L 5.5,7 L 2,7 L 4,5 Z</Geometry>
+
+        <Style x:Key="ClipPillBtnStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextPrimaryBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ThemeButtonBgBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeCardBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="11,5" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="12"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeButtonHoverBgBrush}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ThemeButtonPressedBgBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ClipScrollThumbStyle" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="ThumbBorder"
+                                Background="{DynamicResource ThemeScrollThumbBrush}"
+                                CornerRadius="4"
+                                Margin="2,0" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeScrollThumbHoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="Width" Value="7" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Border Background="{DynamicResource ThemeScrollTrackBrush}" CornerRadius="3.5" Margin="1.5,2" />
+                            <Track x:Name="PART_Track" IsDirectionReversed="True" Margin="0,2">
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource ClipScrollThumbStyle}" />
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="RootClipGrid" Margin="16" RenderTransformOrigin="0.5,0.5">
+        <Grid.RenderTransform>
+            <ScaleTransform x:Name="ClipScaleTransform" ScaleX="0.92" ScaleY="0.92" />
+        </Grid.RenderTransform>
+        <Grid.Effect>
+            <BlurEffect x:Name="ClipBlurEffect" Radius="8" />
+        </Grid.Effect>
+
+        <Border x:Name="MainSurfaceBorder"
+                CornerRadius="24"
+                BorderThickness="1"
+                Background="{DynamicResource ThemeSurfaceBrush}"
+                BorderBrush="{DynamicResource ThemeGlassBorderBrush}">
+            <Border.Effect>
+                <DropShadowEffect Color="{DynamicResource ThemeShadowColor}" BlurRadius="22" ShadowDepth="6" Opacity="0.65" />
+            </Border.Effect>
+
+            <Grid Margin="18,16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <DockPanel Grid.Row="0" Margin="0,0,0,12" Background="Transparent" Cursor="SizeAll">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Width="9" Height="9" CornerRadius="4.5" Margin="0,0,9,0" Background="{DynamicResource ThemeAccentGradientBrush}" />
+                        <TextBlock Text="{DynamicResource Loc_Clip_Header}"
+                                   Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                   FontSize="16"
+                                   FontWeight="Bold" />
+                        <Border Margin="10,0,0,0"
+                                Padding="8,2"
+                                CornerRadius="9"
+                                Background="{DynamicResource ThemeHighlightBrush}">
+                            <TextBlock x:Name="CountBadgeText"
+                                       Text="0"
+                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                       FontSize="11"
+                                       FontWeight="Bold" />
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="FilterPinnedBtn"
+                                Content="{DynamicResource Loc_Clip_Pinned}"
+                                Click="OnTogglePinnedFilterClick"
+                                Style="{StaticResource ClipPillBtnStyle}"
+                                Margin="0,0,6,0" />
+                        <Button Click="OnCloseClick"
+                                Style="{StaticResource ClipPillBtnStyle}"
+                                Width="30" Height="28" Padding="0"
+                                ToolTip="{DynamicResource Loc_CloseEsc}">
+                            <Path Data="{StaticResource CloseIconGeometry}"
+                                  Stroke="{DynamicResource ThemeTextPrimaryBrush}"
+                                  StrokeThickness="1.6"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Width="9" Height="9" Stretch="Uniform" />
+                        </Button>
+                    </StackPanel>
+                </DockPanel>
+
+                <!-- Keyword Search Box -->
+                <Border Grid.Row="1"
+                        CornerRadius="14"
+                        Background="{DynamicResource ThemeControlBgBrush}"
+                        BorderBrush="{DynamicResource ThemeControlBorderBrush}"
+                        BorderThickness="1"
+                        Padding="10,6"
+                        Margin="0,0,0,12">
+                    <DockPanel>
+                        <Path DockPanel.Dock="Left"
+                              Data="{StaticResource SearchIconGeometry}"
+                              Stroke="{DynamicResource ThemeAccentBrush}"
+                              StrokeThickness="1.6"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Width="13" Height="13"
+                              Margin="0,0,8,0"
+                              VerticalAlignment="Center" />
+                        <Button DockPanel.Dock="Right"
+                                Content="{DynamicResource Loc_Reset}"
+                                Click="OnClearSearchClick"
+                                Style="{StaticResource ClipPillBtnStyle}"
+                                Padding="8,2"
+                                FontSize="10.5"
+                                Margin="6,0,0,0" />
+                        <Grid>
+                            <TextBlock x:Name="SearchPlaceholder"
+                                       Text="{DynamicResource Loc_Clip_SearchPlaceholder}"
+                                       Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                       FontSize="12.5"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False" />
+                            <TextBox x:Name="SearchBox"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                     CaretBrush="{DynamicResource ThemeAccentBrush}"
+                                     FontSize="12.5"
+                                     VerticalAlignment="Center"
+                                     TextChanged="OnSearchTextChanged" />
+                        </Grid>
+                    </DockPanel>
+                </Border>
+
+                <!-- Clipboard Items -->
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl x:Name="EntriesItemsControl">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{DynamicResource ThemeCardBgBrush}"
+                                        BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="14"
+                                        Padding="12,9"
+                                        Margin="0,0,0,8">
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Right"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center"
+                                                    Margin="10,0,0,0">
+                                            <Button Content="{Binding PinLabel}"
+                                                    Tag="{Binding Id}"
+                                                    Click="OnPinEntryClick"
+                                                    Style="{StaticResource ClipPillBtnStyle}"
+                                                    Padding="8,4"
+                                                    FontSize="10.5"
+                                                    Margin="0,0,5,0"
+                                                    ToolTip="{DynamicResource Loc_Clip_PinTooltip}" />
+                                            <Button Content="{DynamicResource Loc_Copy}"
+                                                    Tag="{Binding Id}"
+                                                    Click="OnCopyEntryClick"
+                                                    Style="{StaticResource ClipPillBtnStyle}"
+                                                    Padding="10,4"
+                                                    FontSize="10.5"
+                                                    Margin="0,0,5,0" />
+                                            <Button Content="✕"
+                                                    Tag="{Binding Id}"
+                                                    Click="OnDeleteEntryClick"
+                                                    Style="{StaticResource ClipPillBtnStyle}"
+                                                    Width="24" Height="24" Padding="0"
+                                                    FontSize="10"
+                                                    ToolTip="{DynamicResource Loc_Clip_DeleteTooltip}" />
+                                        </StackPanel>
+
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding PreviewText}"
+                                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                                       FontSize="12.5"
+                                                       FontWeight="SemiBold"
+                                                       TextWrapping="Wrap"
+                                                       MaxHeight="54"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding MetaText}"
+                                                       Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                                       FontSize="10.5"
+                                                       Margin="0,3,0,0" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- Footer -->
+                <Grid Grid.Row="3" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusFooterText"
+                               Grid.Column="0"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                               FontSize="11.5"
+                               Text="{DynamicResource Loc_Clip_FooterHint}" />
+                    <Button Grid.Column="1"
+                            Content="{DynamicResource Loc_Clip_ClearUnpinned}"
+                            Click="OnClearUnpinnedClick"
+                            Style="{StaticResource ClipPillBtnStyle}"
+                            Margin="10,0,0,0" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

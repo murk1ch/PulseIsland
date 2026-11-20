@@ -1,0 +1,17 @@
+# Build outputs & IDE files
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.cache
+*.log
+
+# Portable runtime & user data (created automatically on first run)
+config/
+models/
+cache/
+logs/
+dist/
+Release/
+.nuget/

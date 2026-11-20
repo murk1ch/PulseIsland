@@ -1,0 +1,163 @@
+<Window x:Class="PulseIsland.UI.TranslationPopupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        SizeToContent="WidthAndHeight"
+        ResizeMode="NoResize"
+        MaxWidth="450">
+
+    <Window.Resources>
+        <Geometry x:Key="CloseIconGeometry">M 1,1 L 9,9 M 9,1 L 1,9</Geometry>
+
+        <Style x:Key="GlassActionButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextPrimaryBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ThemeButtonBgBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeCardBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BtnBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="12"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBorder" Property="Background" Value="{DynamicResource ThemeButtonHoverBgBrush}" />
+                                <Setter TargetName="BtnBorder" Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BtnBorder" Property="Background" Value="{DynamicResource ThemeButtonPressedBgBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="RootPopupContainer"
+          Margin="16"
+          RenderTransformOrigin="0.5,0.5">
+        <Grid.RenderTransform>
+            <ScaleTransform x:Name="PopupScaleTransform" ScaleX="0.92" ScaleY="0.92" />
+        </Grid.RenderTransform>
+        <Grid.Effect>
+            <BlurEffect x:Name="PopupBlurEffect" Radius="8" />
+        </Grid.Effect>
+
+        <!-- Soft Ambient Shadow (No Neon Rim) -->
+        <Border CornerRadius="22"
+                Margin="-2"
+                Background="#70000000"
+                IsHitTestVisible="False">
+            <Border.Effect>
+                <BlurEffect Radius="18" />
+            </Border.Effect>
+        </Border>
+
+        <!-- Main Frosted Glass Card (drag anywhere to reposition) -->
+        <Border x:Name="MainPopupCard"
+                Padding="16,14"
+                CornerRadius="20"
+                BorderThickness="1"
+                Background="{DynamicResource ThemeSurfaceBrush}"
+                BorderBrush="{DynamicResource ThemeGlassBorderBrush}"
+                MouseLeftButtonDown="OnPopupMouseLeftButtonDown">
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Top Specular Glass Reflection -->
+                <Border Grid.Row="0"
+                        Height="14"
+                        VerticalAlignment="Top"
+                        Margin="-10,-10,-10,0"
+                        CornerRadius="16,16,0,0"
+                        Background="{DynamicResource ThemeReflectionBrush}"
+                        IsHitTestVisible="False" />
+
+                <!-- Header -->
+                <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                    <Border DockPanel.Dock="Left"
+                            Padding="10,3"
+                            CornerRadius="10"
+                            Background="{DynamicResource ThemeHighlightBrush}"
+                            BorderBrush="{DynamicResource ThemeAccentBrush}"
+                            BorderThickness="1">
+                        <TextBlock x:Name="LangBadgeText"
+                                   Text="AUTO → RU"
+                                   Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                    </Border>
+
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="CopyButton"
+                                Content="{DynamicResource Loc_Copy}"
+                                Click="OnCopyClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="11,4"
+                                Margin="0,0,6,0"
+                                FontSize="11.5" />
+                        <Button Click="OnCloseClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Width="26"
+                                Height="26"
+                                Padding="0"
+                                ToolTip="{DynamicResource Loc_Close}">
+                            <Path Data="{StaticResource CloseIconGeometry}"
+                                  Stroke="{DynamicResource ThemeTextPrimaryBrush}"
+                                  StrokeThickness="1.5"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Width="9" Height="9"
+                                  Stretch="Uniform" />
+                        </Button>
+                    </StackPanel>
+                </DockPanel>
+
+                <!-- Translated text -->
+                <TextBlock x:Name="TranslatedTextBlock"
+                           Grid.Row="1"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                           FontSize="14.5"
+                           LineHeight="21"
+                           FontWeight="Medium"
+                           FontFamily="Segoe UI" />
+
+                <!-- Original text snippet -->
+                <Border x:Name="SourceTextBorder"
+                        Grid.Row="2"
+                        Margin="0,10,0,0"
+                        Padding="10,6"
+                        CornerRadius="10"
+                        Background="{DynamicResource ThemeCardBgBrush}"
+                        BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                        BorderThickness="1">
+                    <TextBlock x:Name="SourceTextBlock"
+                               TextWrapping="Wrap"
+                               MaxHeight="64"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                               FontSize="11.5"
+                               FontFamily="Segoe UI" />
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
