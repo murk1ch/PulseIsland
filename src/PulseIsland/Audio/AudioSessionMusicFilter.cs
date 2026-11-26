@@ -13,7 +13,8 @@ public sealed class AudioSessionMusicFilter : IDisposable
     private static readonly string[] VoiceProcessMarkers =
     [
         "discord", "teamspeak", "ts3client", "zoom", "skype",
-        "telegram", "viber", "mumble", "ventrilo", "webex", "facetime"
+        "telegram", "viber", "mumble", "ventrilo", "webex", "facetime",
+        "teams", "ms-teams"
     ];
 
     private static readonly string[] KnownMusicProcessMarkers =
@@ -241,7 +242,7 @@ public sealed class AudioSessionMusicFilter : IDisposable
         if (!string.IsNullOrWhiteSpace(sourceAppLower))
         {
             string cleanProc = procName.Replace(".exe", string.Empty, StringComparison.OrdinalIgnoreCase);
-            if (sourceAppLower.Contains(cleanProc, StringComparison.OrdinalIgnoreCase))
+            if (cleanProc.Length >= 4 && sourceAppLower.Contains(cleanProc, StringComparison.OrdinalIgnoreCase))
                 return true;
 
             // Match friendly Chrome/Edge/Yandex AppUserModelIds

@@ -130,7 +130,7 @@ public static class ThemeService
 
         [AppThemeStyle.NavyMagenta] = new(
             Style: AppThemeStyle.NavyMagenta,
-            DisplayName: "Navy / Magenta",
+            DisplayName: "Deep Navy / Magenta",
             SurfaceStart: C("#F6071124"),
             SurfaceMid: C("#FA0D1C3B"),
             SurfaceEnd: C("#F6060D1C"),
@@ -217,7 +217,7 @@ public static class ThemeService
 
         [AppThemeStyle.LightWhite] = new(
             Style: AppThemeStyle.LightWhite,
-            DisplayName: "Light White (Frosted Glass)",
+            DisplayName: "Light Frosted Glass",
             SurfaceStart: C("#F5F8FAFC"),
             SurfaceMid: C("#FAFFFFFF"),
             SurfaceEnd: C("#F5EEF2F7"),

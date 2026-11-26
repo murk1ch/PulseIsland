@@ -10,6 +10,8 @@ namespace PulseIsland.Services;
 /// Lightweight zero-NuGet wireless mouse battery monitor supporting:
 /// 1) Bluetooth LE / Classic (Windows PnP ContainerId-grouped DEVPKEY_Device_BatteryPlusCharging),
 /// 2) 2.4 GHz USB HID dongles (Beken/Rongyuan VID 0x1D57 PID 0xFA60 Interrupt-IN + Attack Shark X3 0x4010 scaling,
+///    Compx / VXE / VGN / ATK / Scyrox / Darmoshark / Zaopin / Ajazz / Mchose VID 0x3554 &amp; 0x25A7 &amp; 0x373B,
+///    Lamzu / Pulsar / Nordic 4K-8K VID 0x3710 &amp; 0x3367 &amp; 0x373E,
 ///    Logitech HID++ 2.0, Razer HyperSpeed, HID Power/Battery Pages 0x84/0x85),
 /// 3) Wired USB charging detection (Beken VID 0x1D57 PID 0xFA61 / 0xFA55 via zero-access CreateFileW).
 /// Uses raw Win32 OVERLAPPED + CancelIoEx for all HID Interrupt-IN/OUT I/O so silent drivers never deadlock.
@@ -143,16 +145,16 @@ public sealed class MouseBatteryService : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool ReadFile(
         SafeFileHandle hFile, IntPtr lpBuffer, uint nNumberOfBytesToRead,
-        out uint lpNumberOfBytesRead, ref NativeOverlapped lpOverlapped);
+        out uint lpNumberOfBytesRead, IntPtr lpOverlapped);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool WriteFile(
         SafeFileHandle hFile, IntPtr lpBuffer, uint nNumberOfBytesToWrite,
-        out uint lpNumberOfBytesWritten, ref NativeOverlapped lpOverlapped);
+        out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetOverlappedResult(
-        SafeFileHandle hFile, ref NativeOverlapped lpOverlapped,
+        SafeFileHandle hFile, IntPtr lpOverlapped,
         out uint lpNumberOfBytesTransferred, bool bWait);
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -181,15 +183,22 @@ public sealed class MouseBatteryService : IDisposable
     private readonly Func<MouseConnectionMode> _getMode;
     private readonly Func<bool> _isEnabled;
     private readonly object _listenerLock = new();
+    private readonly object _snapshotLock = new();
     private CancellationTokenSource? _listenerCts;
     private Task? _listenerTask;
     private string _listenerDevicePath = string.Empty;
+    private int _listenerGen;
     private MouseBatterySnapshot _cachedBekenSnapshot;
+    private MouseBatterySnapshot _lastSnapshot;
     private bool _wasWiredCharging;
     private int _isSampling;
     private bool _disposed;
 
-    public MouseBatterySnapshot LastSnapshot { get; private set; }
+    public MouseBatterySnapshot LastSnapshot
+    {
+        get { lock (_snapshotLock) return _lastSnapshot; }
+        private set { lock (_snapshotLock) _lastSnapshot = value; }
+    }
     public event Action<MouseBatterySnapshot>? BatteryUpdated;
 
     public MouseBatteryService(Func<bool> isEnabled, Func<MouseConnectionMode> getMode)
@@ -263,7 +272,9 @@ public sealed class MouseBatteryService : IDisposable
                     true,
                     0,
                     true,
-                    string.IsNullOrWhiteSpace(beken.WiredProduct) ? "USB Gaming Mouse" : beken.WiredProduct,
+                    string.IsNullOrWhiteSpace(beken.WiredProduct)
+                        ? LocalizationService.Pick("USB Gaming Mouse", "USB-мышь")
+                        : beken.WiredProduct,
                     LocalizationService.Pick("USB cable", "USB кабель"));
             }
 
@@ -322,7 +333,9 @@ public sealed class MouseBatteryService : IDisposable
                     true,
                     0,
                     true,
-                    string.IsNullOrWhiteSpace(beken.WiredProduct) ? "USB Gaming Mouse" : beken.WiredProduct,
+                    string.IsNullOrWhiteSpace(beken.WiredProduct)
+                        ? LocalizationService.Pick("USB Gaming Mouse", "USB-мышь")
+                        : beken.WiredProduct,
                     LocalizationService.Pick("USB cable", "USB кабель"));
             }
 
@@ -460,7 +473,7 @@ public sealed class MouseBatteryService : IDisposable
                 true,
                 Math.Clamp(node.BatteryPercent.Value, 0, 100),
                 node.IsCharging,
-                string.IsNullOrWhiteSpace(node.Name) ? LocalizationService.Pick("Bluetooth mouse", "Bluetooth мышь") : node.Name,
+                string.IsNullOrWhiteSpace(node.Name) ? LocalizationService.Pick("Bluetooth Mouse", "Bluetooth мышь") : node.Name,
                 "Bluetooth");
         }
 
@@ -489,7 +502,7 @@ public sealed class MouseBatteryService : IDisposable
         if (!string.IsNullOrWhiteSpace(nonGeneric))
             return nonGeneric;
 
-        return LocalizationService.Pick("Bluetooth mouse", "Bluetooth мышь");
+        return LocalizationService.Pick("Bluetooth Mouse", "Bluetooth мышь");
     }
 
     private static bool IsGenericHidOrBatteryName(string name)
@@ -548,13 +561,14 @@ public sealed class MouseBatteryService : IDisposable
                     if (string.IsNullOrWhiteSpace(devPath))
                         continue;
 
+                    // Zero-access non-overlapped open for fast attribute/caps inspection (never stalls or violates OVERLAPPED)
                     using var handle = CreateFileW(
                         devPath,
-                        GENERIC_READ,
+                        0,
                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                         IntPtr.Zero,
                         OPEN_EXISTING,
-                        FILE_FLAG_OVERLAPPED,
+                        0,
                         IntPtr.Zero);
 
                     if (handle.IsInvalid)
@@ -582,13 +596,12 @@ public sealed class MouseBatteryService : IDisposable
                     if (caps.UsagePage == 0x01)
                         continue;
 
-                    string product = ReadHidProductName(handle);
-
                     // Never call synchronous HidD_GetFeature on Beken VID 0x1D57 (blocks IRP on col04 / FA61)
                     if (attrs.VendorID == 0x1D57)
                     {
                         if (probeBekenInterrupt && IsBekenTelemetryCollection(attrs, caps))
                         {
+                            string product = ReadHidProductName(handle);
                             var snap = TryReadBekenOneShot(devPath, caps.InputReportByteLength, product);
                             if (snap.HasDevice)
                                 return snap;
@@ -596,17 +609,29 @@ public sealed class MouseBatteryService : IDisposable
                         continue;
                     }
 
-                    // 1) Standard HID Battery / Power Device Page (0x84 or 0x85)
+                    // 1) Standard HID Battery / Power Device Page (0x84 or 0x85) — guard against desktop UPS units!
                     if (caps.UsagePage is 0x84 or 0x85 && caps.FeatureReportByteLength >= 2)
                     {
-                        var snap = TryQueryHidPowerPage(handle, caps.FeatureReportByteLength, product);
-                        if (snap.HasDevice)
-                            return snap;
+                        string product = ReadHidProductName(handle);
+                        if (IsLikelyMouseName(product) && !IsNonMousePeripheralName(product) &&
+                            !product.Contains("ups", StringComparison.OrdinalIgnoreCase))
+                        {
+                            using var syncHandle = CreateFileW(
+                                devPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+                            if (!syncHandle.IsInvalid)
+                            {
+                                var snap = TryQueryHidPowerPage(syncHandle, caps.FeatureReportByteLength, product);
+                                if (snap.HasDevice)
+                                    return snap;
+                            }
+                        }
                     }
 
                     // 2) Logitech HID++ 2.0 receiver (0x046D)
                     if (attrs.VendorID == 0x046D && caps.UsagePage >= 0xFF00)
                     {
+                        string product = ReadHidProductName(handle);
                         using var rwHandle = CreateFileW(
                             devPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                             IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, IntPtr.Zero);
@@ -618,17 +643,56 @@ public sealed class MouseBatteryService : IDisposable
                         }
                     }
 
-                    // 3) Razer HyperSpeed 2.4 GHz wireless dongle (0x1532)
+                    // 3) Razer HyperSpeed 2.4 GHz wireless dongle (0x1532) — non-overlapped for HidD_Set/GetFeature
                     if (attrs.VendorID == 0x1532 && caps.FeatureReportByteLength >= 90)
                     {
-                        using var rwHandle = CreateFileW(
+                        string product = ReadHidProductName(handle);
+                        using var syncRw = CreateFileW(
                             devPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                            IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, IntPtr.Zero);
-                        if (!rwHandle.IsInvalid)
+                            IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+                        if (!syncRw.IsInvalid)
                         {
-                            var snap = TryQueryRazerDongle(rwHandle, caps.FeatureReportByteLength, product);
+                            var snap = TryQueryRazerDongle(syncRw, caps.FeatureReportByteLength, product);
                             if (snap.HasDevice)
                                 return snap;
+                        }
+                    }
+
+                    // 4) Compx / VXE / VGN / ATK / Scyrox / Darmoshark / Zaopin / Ajazz / Mchose / Lamzu (0x3554, 0x25A7, 0x373B)
+                    if (IsCompxOrAtkVendor(attrs.VendorID) && caps.UsagePage >= 0xFF00 &&
+                        caps.OutputReportByteLength >= 17 && caps.InputReportByteLength >= 16)
+                    {
+                        string product = ReadHidProductName(handle);
+                        if (!IsNonMousePeripheralName(product))
+                        {
+                            using var rwHandle = CreateFileW(
+                                devPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, IntPtr.Zero);
+                            if (!rwHandle.IsInvalid)
+                            {
+                                var snap = TryQueryCompxAtkVxeDongle(rwHandle, attrs.VendorID, caps, product);
+                                if (snap.HasDevice)
+                                    return snap;
+                            }
+                        }
+                    }
+
+                    // 5) Pulsar / Lamzu Aurora / Nordic 4K-8K (0x3710, 0x3367, 0x373E)
+                    if (IsPulsarOrLamzuVendor(attrs.VendorID) && caps.UsagePage >= 0xFF00 &&
+                        caps.OutputReportByteLength >= 17 && caps.InputReportByteLength >= 16)
+                    {
+                        string product = ReadHidProductName(handle);
+                        if (!IsNonMousePeripheralName(product))
+                        {
+                            using var rwHandle = CreateFileW(
+                                devPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, IntPtr.Zero);
+                            if (!rwHandle.IsInvalid)
+                            {
+                                var snap = TryQueryPulsarLamzuDongle(rwHandle, attrs.VendorID, caps, product);
+                                if (snap.HasDevice)
+                                    return snap;
+                            }
                         }
                     }
                 }
@@ -779,13 +843,14 @@ public sealed class MouseBatteryService : IDisposable
             }
 
             StopBekenListenerUnsafe();
+            int gen = ++_listenerGen;
             _listenerDevicePath = beken.WirelessDonglePath;
             _listenerCts = new CancellationTokenSource();
             var token = _listenerCts.Token;
             string devPath = beken.WirelessDonglePath;
             int inLen = beken.WirelessInputLen;
             string product = beken.WirelessProduct;
-            _listenerTask = Task.Run(() => RunBekenListenerLoop(devPath, inLen, product, token), token);
+            _listenerTask = Task.Run(() => RunBekenListenerLoop(devPath, inLen, product, gen, token), token);
         }
     }
 
@@ -809,8 +874,9 @@ public sealed class MouseBatteryService : IDisposable
         _listenerTask = null;
     }
 
-    private void RunBekenListenerLoop(string devPath, int inputLen, string product, CancellationToken ct)
+    private void RunBekenListenerLoop(string devPath, int inputLen, string product, int listenerGen, CancellationToken ct)
     {
+        string displayName = string.IsNullOrWhiteSpace(product) ? LocalizationService.Pick("2.4 GHz Mouse", "2.4 ГГц мышь") : product;
         int reportLen = Math.Max(inputLen, 5);
         byte[] managedBuf = new byte[reportLen];
 
@@ -849,10 +915,7 @@ public sealed class MouseBatteryService : IDisposable
 
                 if (TryParseBekenBatteryPacket(managedBuf, read, out int pct, out bool isCharging))
                 {
-                    string activeDisplayName = string.IsNullOrWhiteSpace(product)
-                        ? LocalizationService.Pick("2.4 GHz mouse", "2.4 ГГц мышь")
-                        : product;
-                    var snap = new MouseBatterySnapshot(true, pct, isCharging, activeDisplayName, LocalizationService.Pick("2.4 GHz", "2.4 ГГц"));
+                    var snap = new MouseBatterySnapshot(true, pct, isCharging, displayName, LocalizationService.Pick("2.4 GHz", "2.4 ГГц"));
                     bool changed = !_cachedBekenSnapshot.HasDevice ||
                                    _cachedBekenSnapshot.Percent != snap.Percent ||
                                    _cachedBekenSnapshot.IsCharging != snap.IsCharging ||
@@ -874,7 +937,8 @@ public sealed class MouseBatteryService : IDisposable
         {
             lock (_listenerLock)
             {
-                if (string.Equals(_listenerDevicePath, devPath, StringComparison.OrdinalIgnoreCase))
+                if (_listenerGen == listenerGen &&
+                    string.Equals(_listenerDevicePath, devPath, StringComparison.OrdinalIgnoreCase))
                 {
                     _listenerDevicePath = string.Empty;
                 }
@@ -908,7 +972,7 @@ public sealed class MouseBatteryService : IDisposable
                     true,
                     pct,
                     isCharging,
-                    string.IsNullOrWhiteSpace(product) ? LocalizationService.Pick("2.4 GHz mouse", "2.4 ГГц мышь") : product,
+                    string.IsNullOrWhiteSpace(product) ? LocalizationService.Pick("2.4 GHz Mouse", "2.4 ГГц мышь") : product,
                     LocalizationService.Pick("2.4 GHz", "2.4 ГГц"));
             }
         }
@@ -917,8 +981,10 @@ public sealed class MouseBatteryService : IDisposable
     }
 
     /// <summary>
-    /// Reads a single HID Interrupt-IN report using raw Win32 OVERLAPPED + CancelIoEx so it NEVER deadlocks on timeout.
-    /// Returns bytes read (>0), 0 on timeout, or -1 on fatal error.
+    /// Reads a single HID Interrupt-IN report using heap-allocated Win32 OVERLAPPED + CancelIoEx.
+    /// Never frees unmanaged OVERLAPPED or buffer unless the kernel IRP has confirmed completion,
+    /// preventing stack/heap corruption on stalled USB drivers.
+    /// Returns bytes read (>0), 0 on timeout, or -1 on fatal/disconnect error.
     /// </summary>
     private static int ReadHidOverlappedWithCancel(
         SafeFileHandle handle,
@@ -931,11 +997,17 @@ public sealed class MouseBatteryService : IDisposable
         if (hEvent == IntPtr.Zero)
             return -1;
 
+        int ovSize = Marshal.SizeOf<NativeOverlapped>();
+        IntPtr ovPtr = Marshal.AllocHGlobal(ovSize);
         IntPtr nativeBuf = Marshal.AllocHGlobal(bytesToRead);
+        bool irpCompleted = true;
+
         try
         {
             var ov = new NativeOverlapped { EventHandle = hEvent };
-            bool ok = ReadFile(handle, nativeBuf, (uint)bytesToRead, out uint bytesRead, ref ov);
+            Marshal.StructureToPtr(ov, ovPtr, fDeleteOld: false);
+
+            bool ok = ReadFile(handle, nativeBuf, (uint)bytesToRead, out uint bytesRead, ovPtr);
             if (!ok)
             {
                 int err = Marshal.GetLastWin32Error();
@@ -943,6 +1015,7 @@ public sealed class MouseBatteryService : IDisposable
                 if (err != ERROR_IO_PENDING)
                     return -1;
 
+                irpCompleted = false;
                 uint waited = 0;
                 const uint stepMs = 200;
                 while (waited < timeoutMs && !ct.IsCancellationRequested)
@@ -951,20 +1024,25 @@ public sealed class MouseBatteryService : IDisposable
                     uint waitRes = WaitForSingleObject(hEvent, slice);
                     if (waitRes == 0) // WAIT_OBJECT_0
                     {
-                        if (GetOverlappedResult(handle, ref ov, out bytesRead, bWait: false) && bytesRead > 0)
+                        irpCompleted = true;
+                        if (GetOverlappedResult(handle, ovPtr, out bytesRead, bWait: false))
                         {
-                            int copyLen = Math.Min((int)bytesRead, dest.Length);
-                            Marshal.Copy(nativeBuf, dest, 0, copyLen);
-                            return copyLen;
+                            if (bytesRead > 0)
+                            {
+                                int copyLen = Math.Min((int)bytesRead, dest.Length);
+                                Marshal.Copy(nativeBuf, dest, 0, copyLen);
+                                return copyLen;
+                            }
+                            return 0;
                         }
-                        return 0;
+                        return -1;
                     }
                     waited += slice;
                 }
 
-                // Timed out or cancelled -> cancel kernel IRP before freeing buffer or closing handle
-                CancelIoEx(handle, IntPtr.Zero);
-                WaitForSingleObject(hEvent, 50);
+                // Timed out or cancelled -> cancel kernel IRP and confirm completion before freeing unmanaged memory
+                CancelIoEx(handle, ovPtr);
+                irpCompleted = WaitForSingleObject(hEvent, 1500) == 0;
                 return 0;
             }
 
@@ -978,8 +1056,12 @@ public sealed class MouseBatteryService : IDisposable
         }
         finally
         {
-            Marshal.FreeHGlobal(nativeBuf);
-            CloseHandle(hEvent);
+            if (irpCompleted)
+            {
+                Marshal.FreeHGlobal(nativeBuf);
+                Marshal.FreeHGlobal(ovPtr);
+                CloseHandle(hEvent);
+            }
         }
     }
 
@@ -992,12 +1074,18 @@ public sealed class MouseBatteryService : IDisposable
         if (hEvent == IntPtr.Zero)
             return false;
 
+        int ovSize = Marshal.SizeOf<NativeOverlapped>();
+        IntPtr ovPtr = Marshal.AllocHGlobal(ovSize);
         IntPtr nativeBuf = Marshal.AllocHGlobal(src.Length);
+        bool irpCompleted = true;
+
         try
         {
             Marshal.Copy(src, 0, nativeBuf, src.Length);
             var ov = new NativeOverlapped { EventHandle = hEvent };
-            bool ok = WriteFile(handle, nativeBuf, (uint)src.Length, out _, ref ov);
+            Marshal.StructureToPtr(ov, ovPtr, fDeleteOld: false);
+
+            bool ok = WriteFile(handle, nativeBuf, (uint)src.Length, out _, ovPtr);
             if (ok)
                 return true;
 
@@ -1006,20 +1094,25 @@ public sealed class MouseBatteryService : IDisposable
             if (err != ERROR_IO_PENDING)
                 return false;
 
-            if (WaitForSingleObject(hEvent, timeoutMs) == 0 &&
-                GetOverlappedResult(handle, ref ov, out _, bWait: false))
+            irpCompleted = false;
+            if (WaitForSingleObject(hEvent, timeoutMs) == 0)
             {
-                return true;
+                irpCompleted = true;
+                return GetOverlappedResult(handle, ovPtr, out _, bWait: false);
             }
 
-            CancelIoEx(handle, IntPtr.Zero);
-            WaitForSingleObject(hEvent, 50);
+            CancelIoEx(handle, ovPtr);
+            irpCompleted = WaitForSingleObject(hEvent, 1500) == 0;
             return false;
         }
         finally
         {
-            Marshal.FreeHGlobal(nativeBuf);
-            CloseHandle(hEvent);
+            if (irpCompleted)
+            {
+                Marshal.FreeHGlobal(nativeBuf);
+                Marshal.FreeHGlobal(ovPtr);
+                CloseHandle(hEvent);
+            }
         }
     }
 
@@ -1058,7 +1151,7 @@ public sealed class MouseBatteryService : IDisposable
             {
                 return new MouseBatterySnapshot(
                     true, buf[1], false,
-                    string.IsNullOrWhiteSpace(product) ? LocalizationService.Pick("2.4 GHz mouse", "2.4 ГГц мышь") : product,
+                    string.IsNullOrWhiteSpace(product) ? LocalizationService.Pick("2.4 GHz Mouse", "2.4 ГГц мышь") : product,
                     LocalizationService.Pick("2.4 GHz HID", "2.4 ГГц HID"));
             }
         }
@@ -1086,6 +1179,9 @@ public sealed class MouseBatteryService : IDisposable
                 return default;
             if (ReadHidOverlappedWithCancel(handle, inBuf, inBuf.Length, 140, CancellationToken.None) < 7)
                 return default;
+            // Reject HID++ 1.0 (0x8F) / HID++ 2.0 (0xFF) error frames (e.g. sleeping/unpaired slot)
+            if (inBuf[0] is not (0x10 or 0x11) || inBuf[1] != 0x01 || inBuf[2] is 0x8F or 0xFF)
+                return default;
 
             // Query UnifiedBattery (0x1004) or BatteryLevelStatus (0x1000) via IRoot GetFeature
             foreach (ushort featId in new ushort[] { 0x1004, 0x1000 })
@@ -1102,6 +1198,8 @@ public sealed class MouseBatteryService : IDisposable
                     continue;
                 if (ReadHidOverlappedWithCancel(handle, inBuf, inBuf.Length, 140, CancellationToken.None) < 7)
                     continue;
+                if (inBuf[0] is not (0x10 or 0x11) || inBuf[1] != 0x01 || inBuf[2] != 0x00 || inBuf[2] is 0x8F or 0xFF)
+                    continue;
 
                 byte featIdx = inBuf[4];
                 if (featIdx == 0) continue;
@@ -1115,6 +1213,8 @@ public sealed class MouseBatteryService : IDisposable
                 if (!WriteHidOverlappedWithCancel(handle, outBuf, 120))
                     continue;
                 if (ReadHidOverlappedWithCancel(handle, inBuf, inBuf.Length, 140, CancellationToken.None) < 7)
+                    continue;
+                if (inBuf[0] is not (0x10 or 0x11) || inBuf[1] != 0x01 || inBuf[2] != featIdx || inBuf[2] is 0x8F or 0xFF)
                     continue;
 
                 int pct = inBuf[4];
@@ -1191,6 +1291,198 @@ public sealed class MouseBatteryService : IDisposable
         return crc;
     }
 
+    internal static bool IsCompxOrAtkVendor(ushort vendorId)
+        => vendorId is 0x3554 or 0x25A7 or 0x373B;
+
+    internal static bool IsPulsarOrLamzuVendor(ushort vendorId)
+        => vendorId is 0x3710 or 0x3367 or 0x373E;
+
+    /// <summary>
+    /// Builds a 17-byte (or padded OutputReportByteLength) Compx / VXE / VGN / ATK / Scyrox / Darmoshark / Zaopin
+    /// 2.4 GHz battery request frame (ReportId = 0x08, Cmd = 0x04, 0x55-complement checksum at index 16).
+    /// </summary>
+    internal static byte[] BuildCompxBatteryRequest(int outputReportLength, byte reportId = 0x08, bool includeReportIdInChecksum = true)
+    {
+        int len = Math.Max(17, outputReportLength);
+        byte[] buf = new byte[len];
+        buf[0] = reportId;
+        buf[1] = 0x04; // Read Battery Level & Charging Status
+
+        int sum = includeReportIdInChecksum ? reportId : 0;
+        for (int i = 1; i <= 15; i++)
+            sum += buf[i];
+
+        buf[16] = (byte)((0x55 - (sum & 0xFF)) & 0xFF);
+        return buf;
+    }
+
+    /// <summary>
+    /// Parses Compx / VXE / VGN / ATK / Darmoshark / Zaopin / Scyrox / Mchose 2.4 GHz battery response packets.
+    /// Rejects asleep/offline status codes (e.g. 0xA1 / 0xFF) and non-0x04 command echoes.
+    /// </summary>
+    internal static bool TryParseCompxBatteryResponse(byte[] data, int length, out int percent, out bool isCharging)
+    {
+        percent = 0;
+        isCharging = false;
+        if (data is null || length < 7 || data.Length < length)
+            return false;
+
+        // ReportId is 0x08 (standard 17-byte Compx/VGN/VXE/ATK) or 0x00 (unnumbered 64/65-byte WebHID bridge)
+        if (data[0] is not (0x08 or 0x00))
+            return false;
+
+        // Command echo must be 0x04 and status byte must be 0x00 (OK; 0xA1/0xFF indicates sleeping mouse)
+        if (data[1] != 0x04 || data[2] != 0x00)
+            return false;
+
+        // Layout A (VGN / VXE R1 / Mad R / ATK F1-X1 / Lamzu Compx 0x3554):
+        // [0]=0x08, [1]=0x04, [2]=0x00, [3]=0x00, [4]=0x02(or 0x04), [5]=0x00, [6]=pct(1..100), [7]=charging(0/1)
+        if (length >= 8 && data[3] == 0x00 && data[4] is 0x02 or 0x04 && data[6] is >= 1 and <= 100 && data[7] <= 0x03)
+        {
+            percent = data[6];
+            isCharging = data[7] is 0x01 or 0x02 or 0x03;
+            return true;
+        }
+
+        // Layout B (Compx CX52850 / Darmoshark / Zaopin / Ajazz 0x25A7):
+        // [0]=0x08, [1]=0x04, [2]=0x00, [3]=0x02(len), [4]=0x00, [5]=pct(1..100), [6]=charging(0/1)
+        if (length >= 7 && data[3] is 0x02 or 0x04 && data[4] == 0x00 && data[5] is >= 1 and <= 100 && data[6] <= 0x03)
+        {
+            percent = data[5];
+            isCharging = data[6] is 0x01 or 0x02 or 0x03;
+            return true;
+        }
+
+        // Layout C (Compact Compx direct payload):
+        // Check [3]=0x00, [4]=pct, [5]=charging BEFORE [3]=pct, [4]=charging so charging=0x01 at [4] is never misread as 1%!
+        if (data[3] == 0x00 && data[4] is >= 1 and <= 100 && data[5] is 0x00 or 0x01)
+        {
+            percent = data[4];
+            isCharging = data[5] == 0x01;
+            return true;
+        }
+
+        if (data[3] is >= 1 and <= 100 && data[4] is 0x00 or 0x01)
+        {
+            percent = data[3];
+            isCharging = data[4] == 0x01;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static MouseBatterySnapshot TryQueryCompxAtkVxeDongle(
+        SafeFileHandle handle,
+        ushort vendorId,
+        HIDP_CAPS caps,
+        string product)
+    {
+        try
+        {
+            byte[] inBuf = new byte[Math.Max(17, (int)caps.InputReportByteLength)];
+            string fallbackLabel = vendorId == 0x373B
+                ? LocalizationService.Pick("ATK / VXE 2.4 GHz", "ATK / VXE 2.4 ГГц")
+                : "VXE / ATK / Compx";
+            string devName = string.IsNullOrWhiteSpace(product) ? fallbackLabel : product;
+
+            // Try standard Compx checksum (includes ReportId 0x08 -> 0x49), then payload-only checksum (0x51)
+            foreach (bool includeRid in new[] { true, false })
+            {
+                byte[] req = BuildCompxBatteryRequest(caps.OutputReportByteLength, reportId: 0x08, includeReportIdInChecksum: includeRid);
+                if (!WriteHidOverlappedWithCancel(handle, req, timeoutMs: 90))
+                    continue;
+
+                Array.Clear(inBuf, 0, inBuf.Length);
+                int read = ReadHidOverlappedWithCancel(handle, inBuf, inBuf.Length, timeoutMs: 110, CancellationToken.None);
+                if (read >= 8 && TryParseCompxBatteryResponse(inBuf, read, out int pct, out bool charging))
+                {
+                    return new MouseBatterySnapshot(true, pct, charging, devName, LocalizationService.Pick("2.4 GHz (Compx/ATK)", "2.4 ГГц (Compx/ATK)"));
+                }
+            }
+        }
+        catch { }
+        return default;
+    }
+
+    internal static byte[] BuildPulsarLamzuBatteryRequest(int outputReportLength, byte reportId = 0x08)
+    {
+        int len = Math.Max(17, outputReportLength);
+        byte[] buf = new byte[len];
+        buf[0] = reportId;
+        buf[1] = 0x04; // Battery status command in Pulsar Fusion / Lamzu Aurora Nordic 4K-8K HID protocol
+        if (len >= 17)
+        {
+            buf[16] = (byte)((0x55 - ((reportId + 0x04) & 0xFF)) & 0xFF);
+        }
+        return buf;
+    }
+
+    internal static bool TryParseLamzuPulsarBatteryResponse(byte[] data, int length, out int percent, out bool isCharging)
+    {
+        percent = 0;
+        isCharging = false;
+        if (data is null || length < 7 || data.Length < length)
+            return false;
+
+        // First check standard Compx/Nordic 0x08 / 0x04 framing (shared by Lamzu Atlantis/Thorn/Maya & Pulsar X2/Xlite)
+        if (TryParseCompxBatteryResponse(data, length, out percent, out isCharging))
+            return true;
+
+        // Pulsar 4K/8K & Lamzu Aurora 64/65-byte Nordic vendor report:
+        // [0]=ReportId(0x04/0x08/0x02), [1]=0x04 (or [2]=0x04), battery 1..100, charging 0..1
+        if (data[0] is 0x02 or 0x04 or 0x08)
+        {
+            if (data[1] == 0x04 && data[2] is >= 1 and <= 100 && data[3] is 0x00 or 0x01)
+            {
+                percent = data[2];
+                isCharging = data[3] == 0x01;
+                return true;
+            }
+
+            if (data[1] == 0x00 && data[2] == 0x04 && data[3] == 0x00 && data[4] is >= 1 and <= 100 && data[5] is 0x00 or 0x01)
+            {
+                percent = data[4];
+                isCharging = data[5] == 0x01;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static MouseBatterySnapshot TryQueryPulsarLamzuDongle(
+        SafeFileHandle handle,
+        ushort vendorId,
+        HIDP_CAPS caps,
+        string product)
+    {
+        try
+        {
+            byte[] inBuf = new byte[Math.Max(17, (int)caps.InputReportByteLength)];
+            string fallbackLabel = vendorId == 0x3710
+                ? LocalizationService.Pick("Pulsar 2.4 GHz", "Pulsar 2.4 ГГц")
+                : LocalizationService.Pick("Lamzu 2.4 GHz", "Lamzu 2.4 ГГц");
+            string devName = string.IsNullOrWhiteSpace(product) ? fallbackLabel : product;
+
+            foreach (byte rid in new byte[] { 0x08, 0x04 })
+            {
+                byte[] req = BuildPulsarLamzuBatteryRequest(caps.OutputReportByteLength, rid);
+                if (!WriteHidOverlappedWithCancel(handle, req, timeoutMs: 90))
+                    continue;
+
+                Array.Clear(inBuf, 0, inBuf.Length);
+                int read = ReadHidOverlappedWithCancel(handle, inBuf, inBuf.Length, timeoutMs: 110, CancellationToken.None);
+                if (read >= 7 && TryParseLamzuPulsarBatteryResponse(inBuf, read, out int pct, out bool charging))
+                {
+                    return new MouseBatterySnapshot(true, pct, charging, devName, LocalizationService.Pick("2.4 GHz (Nordic)", "2.4 ГГц (Nordic)"));
+                }
+            }
+        }
+        catch { }
+        return default;
+    }
+
     private static string ReadHidProductName(SafeFileHandle handle)
     {
         byte[] buf = new byte[256];
@@ -1199,15 +1491,25 @@ public sealed class MouseBatteryService : IDisposable
         return Encoding.Unicode.GetString(buf).TrimEnd('\0').Trim();
     }
 
-    private static bool IsLikelyMouseName(string name)
+    internal static bool IsLikelyMouseName(string name)
     {
         string lower = name.ToLowerInvariant();
         return lower.Contains("mouse") || lower.Contains("мышь") ||
                lower.Contains("superlight") || lower.Contains("viper") ||
                lower.Contains("deathadder") || lower.Contains("basilisk") ||
                lower.Contains("aerox") || lower.Contains("lamzu") ||
-               lower.Contains("vxe") || lower.Contains("attack") ||
-               lower.Contains("kysona");
+               lower.Contains("atlantis") || lower.Contains("maya") ||
+               lower.Contains("thorn") || lower.Contains("paro") ||
+               lower.Contains("vxe") || lower.Contains("vgn") ||
+               lower.Contains("atk") || lower.Contains("dragonfly") ||
+               lower.Contains("mad r") || lower.Contains("scyrox") ||
+               lower.Contains("pulsar") || lower.Contains("xlite") ||
+               lower.Contains("x2v2") || lower.Contains("x2h") ||
+               lower.Contains("darmoshark") || lower.Contains("zaopin") ||
+               lower.Contains("ajazz") || lower.Contains("mchose") ||
+               lower.Contains("incott") || lower.Contains("ninjutso") ||
+               lower.Contains("sora") || lower.Contains("attack") ||
+               lower.Contains("kysona") || lower.Contains("orochi");
     }
 
     private static bool TryReadDevPropByte(IntPtr hSet, ref SP_DEVINFO_DATA devInfo, DEVPROPKEY key, out int value)

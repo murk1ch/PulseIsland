@@ -19,6 +19,7 @@
         <Geometry x:Key="CloseIconGeometry">M 1,1 L 10,10 M 10,1 L 1,10</Geometry>
         <Geometry x:Key="SearchIconGeometry">M 5,1 A 4,4 0 1 0 5,9 A 4,4 0 1 0 5,1 Z M 8,8 L 11,11</Geometry>
         <Geometry x:Key="PinIconGeometry">M 4,1 L 8,1 L 8,5 L 10,7 L 6.5,7 L 6.5,11 L 5.5,11 L 5.5,7 L 2,7 L 4,5 Z</Geometry>
+        <Geometry x:Key="SparkleIconGeometry">M 6,1 L 7.2,4.8 L 11,6 L 7.2,7.2 L 6,11 L 4.8,7.2 L 1,6 L 4.8,4.8 Z</Geometry>
 
         <Style x:Key="ClipPillBtnStyle" TargetType="Button">
             <Setter Property="Foreground" Value="{DynamicResource ThemeTextPrimaryBrush}" />
@@ -68,6 +69,9 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeScrollThumbHoverBrush}" />
                             </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeAccentBrush}" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -84,9 +88,15 @@
                         <Grid Background="Transparent">
                             <Border Background="{DynamicResource ThemeScrollTrackBrush}" CornerRadius="3.5" Margin="1.5,2" />
                             <Track x:Name="PART_Track" IsDirectionReversed="True" Margin="0,2">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" IsHitTestVisible="False" />
+                                </Track.DecreaseRepeatButton>
                                 <Track.Thumb>
                                     <Thumb Style="{StaticResource ClipScrollThumbStyle}" />
                                 </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" IsHitTestVisible="False" />
+                                </Track.IncreaseRepeatButton>
                             </Track>
                         </Grid>
                     </ControlTemplate>
@@ -204,64 +214,170 @@
                     </DockPanel>
                 </Border>
 
-                <!-- Clipboard Items -->
+                <!-- Clipboard Items (Images + Text) -->
                 <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                    <ItemsControl x:Name="EntriesItemsControl">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Border Background="{DynamicResource ThemeCardBgBrush}"
-                                        BorderBrush="{DynamicResource ThemeCardBorderBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="14"
-                                        Padding="12,9"
-                                        Margin="0,0,0,8">
-                                    <DockPanel>
-                                        <StackPanel DockPanel.Dock="Right"
-                                                    Orientation="Horizontal"
-                                                    VerticalAlignment="Center"
-                                                    Margin="10,0,0,0">
-                                            <Button Content="{Binding PinLabel}"
-                                                    Tag="{Binding Id}"
-                                                    Click="OnPinEntryClick"
-                                                    Style="{StaticResource ClipPillBtnStyle}"
-                                                    Padding="8,4"
-                                                    FontSize="10.5"
-                                                    Margin="0,0,5,0"
-                                                    ToolTip="{DynamicResource Loc_Clip_PinTooltip}" />
-                                            <Button Content="{DynamicResource Loc_Copy}"
-                                                    Tag="{Binding Id}"
-                                                    Click="OnCopyEntryClick"
-                                                    Style="{StaticResource ClipPillBtnStyle}"
-                                                    Padding="10,4"
-                                                    FontSize="10.5"
-                                                    Margin="0,0,5,0" />
-                                            <Button Content="✕"
-                                                    Tag="{Binding Id}"
-                                                    Click="OnDeleteEntryClick"
-                                                    Style="{StaticResource ClipPillBtnStyle}"
-                                                    Width="24" Height="24" Padding="0"
-                                                    FontSize="10"
-                                                    ToolTip="{DynamicResource Loc_Clip_DeleteTooltip}" />
-                                        </StackPanel>
+                    <StackPanel>
+                        <!-- Recent Clipboard Screenshots / Images -->
+                        <StackPanel x:Name="ImagesSectionPanel" Visibility="Collapsed" Margin="0,0,0,6">
+                            <TextBlock x:Name="ImagesHeaderText"
+                                       Text="{DynamicResource Loc_Clip_ImagesSection}"
+                                       Foreground="{DynamicResource ThemeSectionHeaderBrush}"
+                                       FontSize="10.5"
+                                       FontWeight="Bold"
+                                       Margin="2,0,0,6" />
+                            <ItemsControl x:Name="ImageEntriesItemsControl">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource ThemeCardBgBrush}"
+                                                BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="14"
+                                                Padding="10,8"
+                                                Margin="0,0,0,8">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
 
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding PreviewText}"
-                                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
-                                                       FontSize="12.5"
-                                                       FontWeight="SemiBold"
-                                                       TextWrapping="Wrap"
-                                                       MaxHeight="54"
-                                                       TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{Binding MetaText}"
-                                                       Foreground="{DynamicResource ThemeTextMutedBrush}"
-                                                       FontSize="10.5"
-                                                       Margin="0,3,0,0" />
-                                        </StackPanel>
-                                    </DockPanel>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                                                <Border Grid.Column="0"
+                                                        Width="68" Height="46"
+                                                        CornerRadius="9"
+                                                        Background="{DynamicResource ThemeControlBgBrush}"
+                                                        BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                                        BorderThickness="1"
+                                                        Margin="0,0,10,0">
+                                                    <Image Source="{Binding Thumbnail}"
+                                                           Width="66" Height="44"
+                                                           Stretch="UniformToFill">
+                                                        <Image.Clip>
+                                                            <RectangleGeometry Rect="0,0,66,44" RadiusX="8" RadiusY="8" />
+                                                        </Image.Clip>
+                                                    </Image>
+                                                </Border>
+
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,8,0">
+                                                    <TextBlock Text="{Binding TitleText}"
+                                                               Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                                               FontSize="12"
+                                                               FontWeight="Bold"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding MetaText}"
+                                                               Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                                               FontSize="10.5"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Margin="0,2,0,0" />
+                                                </StackPanel>
+
+                                                <StackPanel Grid.Column="2"
+                                                            Orientation="Horizontal"
+                                                            VerticalAlignment="Center">
+                                                    <Button Tag="{Binding Id}"
+                                                            Click="OnAskAiImageClick"
+                                                            Style="{StaticResource ClipPillBtnStyle}"
+                                                            Padding="9,4"
+                                                            FontSize="10.5"
+                                                            Margin="0,0,5,0"
+                                                            ToolTip="{DynamicResource Loc_Clip_ImageAskAiTooltip}">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Path Data="{StaticResource SparkleIconGeometry}"
+                                                                  Fill="{DynamicResource ThemeAccentBrush}"
+                                                                  Width="9" Height="9" Stretch="Uniform"
+                                                                  Margin="0,0,4,0" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{DynamicResource Loc_AskAiShort}" VerticalAlignment="Center" />
+                                                        </StackPanel>
+                                                    </Button>
+                                                    <Button Content="{DynamicResource Loc_Copy}"
+                                                            Tag="{Binding Id}"
+                                                            Click="OnCopyImageClick"
+                                                            Style="{StaticResource ClipPillBtnStyle}"
+                                                            Padding="9,4"
+                                                            FontSize="10.5"
+                                                            Margin="0,0,5,0" />
+                                                    <Button Tag="{Binding Id}"
+                                                            Click="OnDeleteImageClick"
+                                                            Style="{StaticResource ClipPillBtnStyle}"
+                                                            Width="24" Height="24" Padding="0"
+                                                            ToolTip="{DynamicResource Loc_Clip_DeleteImageTooltip}">
+                                                        <Path Data="{StaticResource CloseIconGeometry}"
+                                                              Stroke="{DynamicResource ThemeTextSecondaryBrush}"
+                                                              StrokeThickness="1.4"
+                                                              StrokeStartLineCap="Round"
+                                                              StrokeEndLineCap="Round"
+                                                              Width="8" Height="8" Stretch="Uniform" />
+                                                    </Button>
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <ItemsControl x:Name="EntriesItemsControl">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{DynamicResource ThemeCardBgBrush}"
+                                            BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="14"
+                                            Padding="12,9"
+                                            Margin="0,0,0,8">
+                                        <DockPanel>
+                                            <StackPanel DockPanel.Dock="Right"
+                                                        Orientation="Horizontal"
+                                                        VerticalAlignment="Center"
+                                                        Margin="10,0,0,0">
+                                                <Button Content="{Binding PinLabel}"
+                                                        Tag="{Binding Id}"
+                                                        Click="OnPinEntryClick"
+                                                        Style="{StaticResource ClipPillBtnStyle}"
+                                                        Padding="8,4"
+                                                        FontSize="10.5"
+                                                        Margin="0,0,5,0"
+                                                        ToolTip="{DynamicResource Loc_Clip_PinTooltip}" />
+                                                <Button Content="{DynamicResource Loc_Copy}"
+                                                        Tag="{Binding Id}"
+                                                        Click="OnCopyEntryClick"
+                                                        Style="{StaticResource ClipPillBtnStyle}"
+                                                        Padding="10,4"
+                                                        FontSize="10.5"
+                                                        Margin="0,0,5,0" />
+                                                <Button Tag="{Binding Id}"
+                                                        Click="OnDeleteEntryClick"
+                                                        Style="{StaticResource ClipPillBtnStyle}"
+                                                        Width="24" Height="24" Padding="0"
+                                                        ToolTip="{DynamicResource Loc_Clip_DeleteTooltip}">
+                                                    <Path Data="{StaticResource CloseIconGeometry}"
+                                                          Stroke="{DynamicResource ThemeTextSecondaryBrush}"
+                                                          StrokeThickness="1.4"
+                                                          StrokeStartLineCap="Round"
+                                                          StrokeEndLineCap="Round"
+                                                          Width="8" Height="8" Stretch="Uniform" />
+                                                </Button>
+                                            </StackPanel>
+
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding PreviewText}"
+                                                           Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                                           FontSize="12.5"
+                                                           FontWeight="SemiBold"
+                                                           TextWrapping="Wrap"
+                                                           MaxHeight="54"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding MetaText}"
+                                                           Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                                           FontSize="10.5"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Margin="0,3,0,0" />
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
                 </ScrollViewer>
 
                 <!-- Footer -->

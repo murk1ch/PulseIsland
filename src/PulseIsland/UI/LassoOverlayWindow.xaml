@@ -3,46 +3,98 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="#0502040A"
+        Background="#0402040A"
         Topmost="True"
         ShowInTaskbar="False"
         ResizeMode="NoResize"
         Cursor="None">
     <Grid>
         <Canvas x:Name="OverlayCanvas" IsHitTestVisible="False">
-            <!-- Real-time frosted selection bounding box preview while dragging -->
-            <Border x:Name="SelectionPreviewBorder"
+            <!-- Subtle dim backdrop around the selected rectangle so the cut-out area stands out cleanly -->
+            <Path x:Name="DimBackdropPath"
+                  Fill="#4804070F"
+                  Visibility="Collapsed" />
+
+            <!-- Double-stroke high-contrast live selection box (visible on pure white AND pure black) -->
+            <Border x:Name="SelectionPreviewOuter"
                     Visibility="Collapsed"
-                    CornerRadius="10"
-                    Background="#16FFFFFF"
-                    BorderBrush="#88FFFFFF"
-                    BorderThickness="1.2" />
+                    CornerRadius="5"
+                    BorderBrush="#E0050812"
+                    BorderThickness="2.2"
+                    Background="Transparent">
+                <Border x:Name="SelectionPreviewInner"
+                        CornerRadius="3.5"
+                        Background="#0AFFFFFF"
+                        BorderBrush="{DynamicResource ThemeAccentBrush}"
+                        BorderThickness="1.6" />
+            </Border>
 
-            <Canvas x:Name="TrailCanvas" />
+            <!-- Compact floating dimensions + mode badge near selection corner -->
+            <Border x:Name="SelectionSizeBadge"
+                    Visibility="Collapsed"
+                    Padding="9,4"
+                    CornerRadius="9"
+                    Background="#E80D111C"
+                    BorderBrush="{DynamicResource ThemeAccentBrush}"
+                    BorderThickness="1">
+                <StackPanel Orientation="Horizontal">
+                    <Ellipse x:Name="SelectionModeDot"
+                             Width="6" Height="6"
+                             Fill="{DynamicResource ThemeAccentBrush}"
+                             Margin="0,0,6,0"
+                             VerticalAlignment="Center" />
+                    <TextBlock x:Name="SelectionSizeText"
+                               Text="{DynamicResource Loc_Lasso_BadgeDefault}"
+                               Foreground="#FFF4F7FF"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               FontFamily="Segoe UI" />
+                </StackPanel>
+            </Border>
 
-            <Polyline x:Name="LassoPolyline"
-                      Stroke="#FFFFFFFF"
-                      StrokeThickness="2.4"
-                      StrokeLineJoin="Round"
-                      StrokeStartLineCap="Round"
-                      StrokeEndLineCap="Round"
-                      Opacity="0.95">
-                <Polyline.Effect>
-                    <DropShadowEffect Color="#FFFFFFFF" BlurRadius="8" ShadowDepth="0" Opacity="0.7" />
-                </Polyline.Effect>
-            </Polyline>
+            <!-- Fading cursor trail with dark halo so it stays clearly visible over bright white backgrounds -->
+            <Canvas x:Name="TrailCanvas">
+                <Canvas.Effect>
+                    <DropShadowEffect Color="#CC000000" BlurRadius="5" ShadowDepth="0" Opacity="0.85" />
+                </Canvas.Effect>
+            </Canvas>
 
-            <Ellipse x:Name="CursorDot"
-                     Width="10"
-                     Height="10"
-                     Fill="#FFFFFFFF"
-                     Stroke="#66FFFFFF"
-                     StrokeThickness="1.5"
-                     Visibility="Collapsed">
-                <Ellipse.Effect>
-                    <DropShadowEffect Color="#FFFFFFFF" BlurRadius="10" ShadowDepth="0" Opacity="0.9" />
-                </Ellipse.Effect>
-            </Ellipse>
+            <!-- Sleek Dynamic Island "Pulse Orb" cursor (minimalist glass lens ring + dual contrast rim, clearly visible on any background) -->
+            <Canvas x:Name="CursorReticle"
+                    Width="26"
+                    Height="26"
+                    RenderTransformOrigin="0.5,0.5"
+                    Visibility="Collapsed">
+                <Canvas.RenderTransform>
+                    <ScaleTransform x:Name="CursorOrbScale" ScaleX="1.0" ScaleY="1.0" />
+                </Canvas.RenderTransform>
+                <Canvas.Effect>
+                    <DropShadowEffect Color="#CC050812" BlurRadius="7" ShadowDepth="0" Opacity="0.88" />
+                </Canvas.Effect>
+
+                <!-- Dark outer contrast bezel + subtle translucent glass lens -->
+                <Ellipse Canvas.Left="2" Canvas.Top="2"
+                         Width="22" Height="22"
+                         Fill="#1F080C18"
+                         Stroke="#EB070B16"
+                         StrokeThickness="2.5" />
+
+                <!-- Crisp luminous inner ring (pops on dark screens while outer dark rim pops on pure white) -->
+                <Ellipse x:Name="CursorInnerRing"
+                         Canvas.Left="3.75" Canvas.Top="3.75"
+                         Width="18.5" Height="18.5"
+                         Fill="Transparent"
+                         Stroke="#F2FFFFFF"
+                         StrokeThickness="1.35" />
+
+                <!-- Precise center accent pearl with dark micro-outline -->
+                <Ellipse x:Name="CursorCoreDot"
+                         Canvas.Left="9.5" Canvas.Top="9.5"
+                         Width="7" Height="7"
+                         Fill="{DynamicResource ThemeAccentBrush}"
+                         Stroke="#F0060A14"
+                         StrokeThickness="1.2" />
+            </Canvas>
         </Canvas>
 
         <!-- Frosted Glass hint pill at top-center while capturing -->
@@ -59,7 +111,7 @@
                 <Ellipse Width="7" Height="7" Fill="{DynamicResource ThemeAccentBrush}" Margin="0,0,9,0" VerticalAlignment="Center" />
                 <TextBlock Text="{DynamicResource Loc_Lasso_Hint}"
                            Foreground="{DynamicResource ThemeTextPrimaryBrush}"
-                           FontSize="12.5"
+                           FontSize="12"
                            FontWeight="Medium"
                            FontFamily="Segoe UI" />
             </StackPanel>

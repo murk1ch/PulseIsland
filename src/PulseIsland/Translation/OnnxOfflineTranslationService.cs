@@ -81,7 +81,7 @@ public sealed class OnnxOfflineTranslationService : IDisposable
                     targetLang,
                     true,
                     LocalizationService.Pick(
-                        "Failed to load support files (onnxruntime.dll / vocab.json / config.json) for offline model.",
+                        "Failed to download support files (onnxruntime.dll / vocab.json / config.json) for the offline model.",
                         "Не удалось загрузить вспомогательные файлы (onnxruntime.dll / vocab.json / config.json) для офлайн-модели."));
             }
 
@@ -104,15 +104,35 @@ public sealed class OnnxOfflineTranslationService : IDisposable
 
     private string ResolveBestModelId(string selectedModelId, string sourceLangHint, string targetLang)
     {
-        if (!string.IsNullOrWhiteSpace(sourceLangHint) &&
+        string normalizedTarget = LanguageCatalog.FindOrDefault(targetLang, "ru").Code;
+        bool hasExplicitSource = !string.IsNullOrWhiteSpace(sourceLangHint) &&
             !string.Equals(sourceLangHint, "und", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(sourceLangHint, "auto", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(sourceLangHint, "auto", StringComparison.OrdinalIgnoreCase);
+
+        if (hasExplicitSource)
         {
             string normalizedSource = LanguageCatalog.FindOrDefault(sourceLangHint, "en").Code;
-            string normalizedTarget = LanguageCatalog.FindOrDefault(targetLang, "ru").Code;
             string exactPair = $"opus-mt-{normalizedSource}-{normalizedTarget}";
             if (IsModelInstalled(exactPair))
                 return exactPair;
+
+            // Multilingual -> English fallback model
+            if (string.Equals(normalizedTarget, "en", StringComparison.OrdinalIgnoreCase) &&
+                IsModelInstalled("opus-mt-mul-en"))
+            {
+                return "opus-mt-mul-en";
+            }
+
+            // Never feed e.g. Russian text into an English-only opus-mt-en-ru model when swapping directions!
+            if (!string.IsNullOrWhiteSpace(selectedModelId) &&
+                selectedModelId.EndsWith($"-{normalizedTarget}", StringComparison.OrdinalIgnoreCase) &&
+                IsModelInstalled(selectedModelId))
+            {
+                return selectedModelId;
+            }
+
+            // Return exact pair (not installed) so TranslateAsync cleanly uses BuiltInLocalTranslator instead of garbling
+            return exactPair;
         }
 
         if (!string.IsNullOrWhiteSpace(selectedModelId) && IsModelInstalled(selectedModelId))
@@ -170,8 +190,10 @@ public sealed class OnnxOfflineTranslationService : IDisposable
             string missingList = string.Join(", ", missing);
             throw new InvalidOperationException(
                 LocalizationService.Pick(
-                    $"Model '{modelId}' is missing vocabulary files ({missingList}, ~1.7 MB), and auto-download from huggingface.co failed or was blocked: {ex.Message}. Allow network access for PulseIsland.exe and click \"Download\" next to the model in Settings — main weights won't be re-downloaded.",
-                    $"Модели '{modelId}' не хватает файлов словаря ({missingList}, ~1.7 МБ), а автозагрузка с huggingface.co заблокирована или нет сети: {ex.Message}. Разрешите доступ в сеть для PulseIsland.exe и нажмите «Скачать» рядом с моделью в Настройках — основные веса заново качаться не будут."),
+                    $"Model '{modelId}' is missing vocabulary files ({missingList}, ~1.7 MB), and auto-download from huggingface.co is blocked or offline: {ex.Message}. " +
+                    $"Allow network access for PulseIsland.exe and click \"Download\" next to the model in Settings — main weights will not be re-downloaded.",
+                    $"Модели '{modelId}' не хватает файлов словаря ({missingList}, ~1.7 МБ), а автозагрузка с huggingface.co заблокирована или нет сети: {ex.Message}. " +
+                    $"Разрешите доступ в сеть для PulseIsland.exe и нажмите «Скачать» рядом с моделью в Настройках — основные веса (416 МБ) заново качаться не будут."),
                 ex);
         }
 

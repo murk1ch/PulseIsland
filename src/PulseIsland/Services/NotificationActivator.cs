@@ -122,8 +122,8 @@ public static partial class NotificationActivator
                 return;
 
             if (string.IsNullOrWhiteSpace(searchTarget) ||
-                searchTarget.Contains("New notification", StringComparison.OrdinalIgnoreCase) ||
                 searchTarget.Contains("Новое уведомление", StringComparison.OrdinalIgnoreCase) ||
+                searchTarget.Contains("New notification", StringComparison.OrdinalIgnoreCase) ||
                 searchTarget.Equals("Telegram", StringComparison.OrdinalIgnoreCase) ||
                 searchTarget.Equals("Telegram Desktop", StringComparison.OrdinalIgnoreCase))
             {
@@ -174,8 +174,8 @@ public static partial class NotificationActivator
 
             if (string.IsNullOrWhiteSpace(target) ||
                 target.Equals("Discord", StringComparison.OrdinalIgnoreCase) ||
-                target.Contains("New notification", StringComparison.OrdinalIgnoreCase) ||
-                target.Contains("Новое уведомление", StringComparison.OrdinalIgnoreCase))
+                target.Contains("Новое уведомление", StringComparison.OrdinalIgnoreCase) ||
+                target.Contains("New notification", StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }

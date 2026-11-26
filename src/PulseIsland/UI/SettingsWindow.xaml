@@ -76,6 +76,7 @@
                                 <Setter Property="Width" Value="Auto" />
                                 <Setter Property="Height" Value="8" />
                                 <Setter Property="MinHeight" Value="8" />
+                                <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -181,7 +182,13 @@
                                               ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
                                               Margin="12,6,32,6"
                                               VerticalAlignment="Center"
-                                              HorizontalAlignment="Left" />
+                                              HorizontalAlignment="Stretch">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
 
                             <Popup x:Name="Popup"
                                    Placement="Bottom"
@@ -257,6 +264,7 @@
             <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondaryBrush}" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Margin" Value="0,0,0,5" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         </Style>
 
         <!-- Rounded Frosted Glass Pill Button -->
@@ -623,27 +631,49 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <!-- Draggable Glass Header -->
-                    <DockPanel Grid.Row="0"
-                               Margin="0,0,0,14"
-                               Background="Transparent"
-                               Cursor="SizeAll"
-                               MouseLeftButtonDown="OnHeaderMouseLeftButtonDown">
-                        <StackPanel DockPanel.Dock="Left">
+                    <!-- Draggable Glass Header (2-column Grid so buttons NEVER clip or overlap title/subtitle) -->
+                    <Grid Grid.Row="0"
+                          Margin="0,0,0,14"
+                          Background="Transparent"
+                          Cursor="SizeAll"
+                          MouseLeftButtonDown="OnHeaderMouseLeftButtonDown">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Margin="0,0,12,0" VerticalAlignment="Center">
                             <StackPanel Orientation="Horizontal">
                                 <Border Width="9" Height="9" CornerRadius="4.5" Margin="0,0,10,0" VerticalAlignment="Center"
                                         Background="{DynamicResource ThemeAccentGradientBrush}" />
-                                <TextBlock Text="{DynamicResource Loc_Settings_Header}" FontSize="19" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimaryBrush}" />
+                                <TextBlock Text="{DynamicResource Loc_Settings_Header}"
+                                           FontSize="19"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource ThemeTextPrimaryBrush}" />
                             </StackPanel>
-                            <TextBlock x:Name="PortableRootText" FontSize="11.5" Foreground="{DynamicResource ThemeTextSecondaryBrush}" Margin="19,3,0,0" />
+                            <TextBlock x:Name="PortableRootText"
+                                       FontSize="11.5"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                       Margin="19,3,0,0" />
                         </StackPanel>
 
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                            <Button Content="{DynamicResource Loc_Settings_ResetDefaults}"
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button Content="{DynamicResource Loc_Settings_GuideBtn}"
+                                    Click="OnOpenOnboardingGuideClick"
+                                    Style="{StaticResource ActionBtnStyle}"
+                                    FontSize="11.5"
+                                    Padding="12,6"
+                                    Margin="0,0,7,0"
+                                    ToolTip="{DynamicResource Loc_Settings_GuideTooltip}" />
+                            <Button Content="{DynamicResource Loc_Settings_ResetShort}"
                                     Click="OnResetDefaultsClick"
                                     Style="{StaticResource ActionBtnStyle}"
                                     FontSize="11.5"
-                                    Margin="0,0,8,0" />
+                                    Padding="12,6"
+                                    Margin="0,0,7,0"
+                                    ToolTip="{DynamicResource Loc_Settings_ResetDefaults}" />
                             <Button Click="OnCancelClick"
                                     Style="{StaticResource ActionBtnStyle}"
                                     Width="34" Height="32"
@@ -658,7 +688,7 @@
                                       Stretch="Uniform" />
                             </Button>
                         </StackPanel>
-                    </DockPanel>
+                    </Grid>
 
                     <!-- Main Tabs -->
                     <TabControl x:Name="SettingsTabControl"
@@ -940,18 +970,16 @@
                                                            Foreground="{DynamicResource ThemeTextSecondaryBrush}"
                                                            FontSize="11.5"
                                                            Margin="0,0,0,4" />
-                                                <DockPanel Margin="0,0,0,10">
-                                                    <TextBlock DockPanel.Dock="Right"
-                                                               Text="{DynamicResource Loc_Sec}"
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                                    <TextBox x:Name="NotifAutoDismissBox"
+                                                             Width="60"
+                                                             Padding="8,5" />
+                                                    <TextBlock Text="{DynamicResource Loc_Sec}"
                                                                VerticalAlignment="Center"
                                                                Foreground="{DynamicResource ThemeTextSecondaryBrush}"
                                                                FontSize="11.5"
-                                                               Margin="6,0,0,0" />
-                                                    <TextBox x:Name="NotifAutoDismissBox"
-                                                             Width="60"
-                                                             HorizontalAlignment="Left"
-                                                             Padding="8,5" />
-                                                </DockPanel>
+                                                               Margin="8,0,0,0" />
+                                                </StackPanel>
                                                 <TextBlock Text="{DynamicResource Loc_Field_NotifSound}"
                                                            Foreground="{DynamicResource ThemeTextSecondaryBrush}"
                                                            FontSize="11.5"
@@ -1102,6 +1130,14 @@
                                             <ComboBox x:Name="TranslationModeCombo" Padding="8,5" Margin="0,0,0,10">
                                                 <ComboBoxItem Content="{DynamicResource Loc_TransMode_Hybrid}" Tag="OnlineWindowsOcr" />
                                                 <ComboBoxItem Content="{DynamicResource Loc_TransMode_Offline}" Tag="OfflineOnnx" />
+                                                <ComboBoxItem Content="{DynamicResource Loc_TransMode_OfflineLlm}" Tag="OfflineLocalLlm" />
+                                            </ComboBox>
+
+                                            <TextBlock Text="{DynamicResource Loc_Field_OcrEngine}" Style="{StaticResource FieldLabelStyle}" />
+                                            <ComboBox x:Name="OcrModeCombo" Padding="8,5" Margin="0,0,0,10">
+                                                <ComboBoxItem Content="{DynamicResource Loc_OcrMode_AutoSmart}" Tag="AutoSmart" />
+                                                <ComboBoxItem Content="{DynamicResource Loc_OcrMode_VisionAlways}" Tag="VisionLlmAlways" />
+                                                <ComboBoxItem Content="{DynamicResource Loc_OcrMode_WindowsOnly}" Tag="WindowsOcrOnly" />
                                             </ComboBox>
 
                                             <Grid Margin="0,0,0,10">
@@ -1128,7 +1164,7 @@
 
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="190" />
+                                                    <ColumnDefinition Width="225" />
                                                     <ColumnDefinition Width="12" />
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="8" />
@@ -1266,7 +1302,7 @@
                                                                    FontSize="11.5" />
                                                         <Button DockPanel.Dock="Right"
                                                                 HorizontalAlignment="Right"
-                                                                Content="{DynamicResource Loc_Cancel}"
+                                                                Content="{DynamicResource Loc_CancelDownload}"
                                                                 Click="OnCancelModelDownloadClick"
                                                                 Style="{StaticResource ActionBtnStyle}"
                                                                 FontSize="10.5"
@@ -1276,73 +1312,79 @@
                                                 </StackPanel>
                                             </Border>
 
-                                            <ItemsControl x:Name="ModelsItemsControl">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{DynamicResource ThemeCardBgBrush}"
-                                                                BorderBrush="{DynamicResource ThemeCardBorderBrush}"
-                                                                BorderThickness="1"
-                                                                CornerRadius="14"
-                                                                Padding="12,10"
-                                                                Margin="0,0,0,8">
-                                                            <DockPanel>
-                                                                <StackPanel DockPanel.Dock="Right"
-                                                                            Orientation="Horizontal"
-                                                                            VerticalAlignment="Center"
-                                                                            Margin="8,0,0,0">
-                                                                    <Button Content="{DynamicResource Loc_Select}"
-                                                                            Tag="{Binding ModelId}"
-                                                                            Click="OnSelectOfflineModelClick"
-                                                                            Style="{StaticResource ActionBtnStyle}"
-                                                                            FontSize="11"
-                                                                            Padding="11,5"
-                                                                            Margin="0,0,6,0" />
-                                                                    <Button Content="{DynamicResource Loc_Download}"
-                                                                            Tag="{Binding ModelId}"
-                                                                            Click="OnDownloadOfflineModelClick"
-                                                                            Style="{StaticResource ActionBtnStyle}"
-                                                                            FontSize="11"
-                                                                            Padding="11,5"
-                                                                            Margin="0,0,6,0" />
-                                                                    <Button Content="{DynamicResource Loc_Delete}"
-                                                                            Tag="{Binding ModelId}"
-                                                                            Click="OnDeleteOfflineModelClick"
-                                                                            Style="{StaticResource ActionBtnStyle}"
-                                                                            FontSize="11"
-                                                                            Padding="11,5" />
-                                                                </StackPanel>
+                                            <TextBlock Text="{DynamicResource Loc_Field_OfflineModelSelect}" Style="{StaticResource FieldLabelStyle}" />
+                                            <ComboBox x:Name="OfflineModelCombo"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectedValuePath="ModelId"
+                                                      SelectionChanged="OnOfflineModelSelectionChanged"
+                                                      Padding="8,5"
+                                                      Margin="0,0,0,8" />
 
-                                                                <StackPanel>
-                                                                    <StackPanel Orientation="Horizontal">
-                                                                        <TextBlock Text="{Binding DisplayName}"
-                                                                                   Foreground="{DynamicResource ThemeTextPrimaryBrush}"
-                                                                                   FontWeight="SemiBold"
-                                                                                   FontSize="12.5" />
-                                                                        <Border Background="{DynamicResource ThemeHighlightBrush}"
-                                                                                CornerRadius="7"
-                                                                                Padding="6,1"
-                                                                                Margin="8,0,0,0"
-                                                                                Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}">
-                                                                            <TextBlock Text="{DynamicResource Loc_Active}" Foreground="{DynamicResource ThemeTextPrimaryBrush}" FontSize="9.5" FontWeight="Bold" />
-                                                                        </Border>
-                                                                    </StackPanel>
-                                                                    <TextBlock Text="{Binding Description}"
-                                                                               Foreground="{DynamicResource ThemeTextSecondaryBrush}"
-                                                                               FontSize="11"
-                                                                               Margin="0,2,0,2" />
-                                                                    <TextBlock Text="{Binding SizeText}"
-                                                                               Foreground="{DynamicResource ThemeSectionHeaderBrush}"
-                                                                               FontSize="10.5" />
-                                                                </StackPanel>
-                                                            </DockPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
+                                            <Border Background="{DynamicResource ThemeCardBgBrush}"
+                                                    BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="14"
+                                                    Padding="12,10">
+                                                <DockPanel>
+                                                    <StackPanel DockPanel.Dock="Right"
+                                                                Orientation="Horizontal"
+                                                                VerticalAlignment="Center"
+                                                                Margin="8,0,0,0">
+                                                        <Button x:Name="DownloadOfflineModelBtn"
+                                                                Content="{DynamicResource Loc_Download}"
+                                                                Click="OnDownloadSelectedOfflineModelClick"
+                                                                Style="{StaticResource ActionBtnStyle}"
+                                                                FontSize="11"
+                                                                Padding="12,5"
+                                                                Margin="0,0,6,0" />
+                                                        <Button x:Name="DeleteOfflineModelBtn"
+                                                                Content="{DynamicResource Loc_Delete}"
+                                                                Click="OnDeleteSelectedOfflineModelClick"
+                                                                Style="{StaticResource ActionBtnStyle}"
+                                                                FontSize="11"
+                                                                Padding="12,5" />
+                                                    </StackPanel>
+
+                                                    <StackPanel>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock x:Name="OfflineModelTitleText"
+                                                                       Grid.Column="0"
+                                                                       Text="Opus-MT (ONNX)"
+                                                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                                                       FontWeight="SemiBold"
+                                                                       FontSize="12.5"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center" />
+                                                            <Border x:Name="OfflineModelActiveBadge"
+                                                                    Grid.Column="1"
+                                                                    Background="{DynamicResource ThemeHighlightBrush}"
+                                                                    CornerRadius="7"
+                                                                    Padding="6,1"
+                                                                    Margin="8,0,0,0"
+                                                                    VerticalAlignment="Center"
+                                                                    Visibility="Collapsed">
+                                                                <TextBlock Text="{DynamicResource Loc_Active}" Foreground="{DynamicResource ThemeTextPrimaryBrush}" FontSize="9.5" FontWeight="Bold" />
+                                                            </Border>
+                                                        </Grid>
+                                                        <TextBlock x:Name="OfflineModelDescText"
+                                                                   Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                                                   FontSize="11"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,2,0,2" />
+                                                        <TextBlock x:Name="OfflineModelSizeText"
+                                                                   Foreground="{DynamicResource ThemeSectionHeaderBrush}"
+                                                                   FontSize="10.5" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </Border>
                                         </StackPanel>
                                     </Border>
 
-                                    <!-- Local AI Assistant (Qwen 2.5 3B GGUF GPU/CPU) -->
+                                    <!-- Local AI Assistant (GGUF GPU/CPU) -->
                                     <Border Style="{StaticResource SectionCardStyle}">
                                         <StackPanel>
                                             <TextBlock Text="{DynamicResource Loc_Sec_LocalAi}" Style="{StaticResource SectionHeaderStyle}" />
@@ -1350,17 +1392,69 @@
                                                       Content="{DynamicResource Loc_Check_EnableAi}"
                                                       Margin="0,0,0,10" />
 
+                                            <TextBlock Text="{DynamicResource Loc_Field_LocalAiModelSelect}" Style="{StaticResource FieldLabelStyle}" />
+                                            <ComboBox x:Name="AiModelCombo"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectedValuePath="ModelId"
+                                                      SelectionChanged="OnAiModelSelectionChanged"
+                                                      Padding="8,5"
+                                                      Margin="0,0,0,8" />
+
                                             <Border Background="{DynamicResource ThemeCardBgBrush}"
                                                     BorderBrush="{DynamicResource ThemeCardBorderBrush}"
                                                     BorderThickness="1"
                                                     CornerRadius="14"
                                                     Padding="12,10"
                                                     Margin="0,0,0,10">
-                                                <DockPanel>
-                                                    <StackPanel DockPanel.Dock="Right"
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock x:Name="AiModelTitleText"
+                                                                       Grid.Column="0"
+                                                                       Text="Qwen 2.5 3B Instruct (Q4_K_M • GGUF)"
+                                                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                                                       FontWeight="SemiBold"
+                                                                       FontSize="12.5"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center" />
+                                                            <Border x:Name="AiReadyBadge"
+                                                                    Grid.Column="1"
+                                                                    Background="{DynamicResource ThemeHighlightBrush}"
+                                                                    CornerRadius="7"
+                                                                    Padding="6,1"
+                                                                    Margin="8,0,0,0"
+                                                                    VerticalAlignment="Center"
+                                                                    Visibility="Collapsed">
+                                                                <TextBlock Text="{DynamicResource Loc_Active}" Foreground="{DynamicResource ThemeTextPrimaryBrush}" FontSize="9.5" FontWeight="Bold" />
+                                                            </Border>
+                                                        </Grid>
+                                                        <TextBlock x:Name="AiModelDescText"
+                                                                   Text="{DynamicResource Loc_Ai_ModelDesc}"
+                                                                   Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                                                   FontSize="11"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,2,0,2" />
+                                                        <TextBlock x:Name="AiModelStatusText"
+                                                                   Foreground="{DynamicResource ThemeSectionHeaderBrush}"
+                                                                   FontSize="10.5"
+                                                                   TextWrapping="Wrap" />
+                                                        <TextBlock x:Name="AiHardwareText"
+                                                                   Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                                                   FontSize="10"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,2,0,0" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1"
                                                                 Orientation="Horizontal"
-                                                                VerticalAlignment="Center"
-                                                                Margin="8,0,0,0">
+                                                                VerticalAlignment="Center">
                                                         <Button x:Name="DownloadAiBtn"
                                                                 Content="{DynamicResource Loc_Download}"
                                                                 Click="OnDownloadAiPackageClick"
@@ -1375,35 +1469,7 @@
                                                                 FontSize="11"
                                                                 Padding="12,5" />
                                                     </StackPanel>
-                                                    <StackPanel>
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="Qwen 2.5 3B Instruct (Q4_K_M • GGUF)"
-                                                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
-                                                                       FontWeight="SemiBold"
-                                                                       FontSize="12.5" />
-                                                            <Border x:Name="AiReadyBadge"
-                                                                    Background="{DynamicResource ThemeHighlightBrush}"
-                                                                    CornerRadius="7"
-                                                                    Padding="6,1"
-                                                                    Margin="8,0,0,0"
-                                                                    Visibility="Collapsed">
-                                                                <TextBlock Text="{DynamicResource Loc_Active}" Foreground="{DynamicResource ThemeTextPrimaryBrush}" FontSize="9.5" FontWeight="Bold" />
-                                                            </Border>
-                                                        </StackPanel>
-                                                        <TextBlock Text="{DynamicResource Loc_Ai_ModelDesc}"
-                                                                   Foreground="{DynamicResource ThemeTextSecondaryBrush}"
-                                                                   FontSize="11"
-                                                                   TextWrapping="Wrap"
-                                                                   Margin="0,2,0,2" />
-                                                        <TextBlock x:Name="AiModelStatusText"
-                                                                   Foreground="{DynamicResource ThemeSectionHeaderBrush}"
-                                                                   FontSize="10.5" />
-                                                        <TextBlock x:Name="AiHardwareText"
-                                                                   Foreground="{DynamicResource ThemeTextMutedBrush}"
-                                                                   FontSize="10"
-                                                                   Margin="0,2,0,0" />
-                                                    </StackPanel>
-                                                </DockPanel>
+                                                </Grid>
                                             </Border>
 
                                             <Grid>
@@ -1450,6 +1516,212 @@
                                                     <ComboBoxItem Tag="FillPrompt" Content="{DynamicResource Loc_AiAction_FillPrompt}" />
                                                 </ComboBox>
                                             </Grid>
+
+                                            <!-- Offline Whisper Voice Dictation Card (2-column Grid so buttons never clip) -->
+                                            <Border Background="{DynamicResource ThemeCardBgBrush}"
+                                                    BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="14"
+                                                    Padding="12,10"
+                                                    Margin="0,12,0,10">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0"
+                                                                       Text="{DynamicResource Loc_Whisper_Title}"
+                                                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                                                       FontWeight="SemiBold"
+                                                                       FontSize="12.5"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center" />
+                                                            <Border x:Name="WhisperReadyBadge"
+                                                                    Grid.Column="1"
+                                                                    Background="{DynamicResource ThemeHighlightBrush}"
+                                                                    CornerRadius="7"
+                                                                    Padding="6,1"
+                                                                    Margin="8,0,0,0"
+                                                                    VerticalAlignment="Center"
+                                                                    Visibility="Collapsed">
+                                                                <TextBlock Text="{DynamicResource Loc_ReadyBadge}" Foreground="{DynamicResource ThemeTextPrimaryBrush}" FontSize="9.5" FontWeight="Bold" />
+                                                            </Border>
+                                                        </Grid>
+                                                        <TextBlock Text="{DynamicResource Loc_Whisper_Desc}"
+                                                                   Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                                                   FontSize="11"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,2,0,2" />
+                                                        <TextBlock x:Name="WhisperStatusText"
+                                                                   Foreground="{DynamicResource ThemeSectionHeaderBrush}"
+                                                                   FontSize="10.5"
+                                                                   TextWrapping="Wrap"
+                                                                   Text="{DynamicResource Loc_Whisper_Checking}" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1"
+                                                                Orientation="Horizontal"
+                                                                VerticalAlignment="Center">
+                                                        <Button x:Name="DownloadWhisperBtn"
+                                                                Content="{DynamicResource Loc_Download}"
+                                                                Click="OnDownloadWhisperClick"
+                                                                Style="{StaticResource ActionBtnStyle}"
+                                                                FontSize="11"
+                                                                Padding="12,5"
+                                                                Margin="0,0,6,0" />
+                                                        <Button x:Name="DeleteWhisperBtn"
+                                                                Content="{DynamicResource Loc_Delete}"
+                                                                Click="OnDeleteWhisperClick"
+                                                                Style="{StaticResource ActionBtnStyle}"
+                                                                FontSize="11"
+                                                                Padding="12,5" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+
+                                            <!-- Custom User Quick-Action Prompt Chips -->
+                                            <Border Background="{DynamicResource ThemeCardBgBrush}"
+                                                    BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="14"
+                                                    Padding="12,10">
+                                                <StackPanel>
+                                                    <Grid Margin="0,0,0,8">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0"
+                                                                   Text="{DynamicResource Loc_CustomPrompts_Header}"
+                                                                   Foreground="{DynamicResource ThemeSectionHeaderBrush}"
+                                                                   FontSize="10.5"
+                                                                   FontWeight="Bold"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   VerticalAlignment="Center"
+                                                                   Margin="0,0,8,0" />
+                                                        <Button Grid.Column="1"
+                                                                HorizontalAlignment="Right"
+                                                                Content="{DynamicResource Loc_Defaults}"
+                                                                Click="OnResetCustomPromptsClick"
+                                                                Style="{StaticResource ActionBtnStyle}"
+                                                                FontSize="10.5"
+                                                                Padding="9,3" />
+                                                    </Grid>
+
+                                                    <ItemsControl x:Name="CustomPromptsListControl" Margin="0,0,0,8">
+                                                        <ItemsControl.ItemsPanel>
+                                                            <ItemsPanelTemplate>
+                                                                <WrapPanel />
+                                                            </ItemsPanelTemplate>
+                                                        </ItemsControl.ItemsPanel>
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <Border Background="{DynamicResource ThemeControlBgBrush}"
+                                                                        BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                                                        BorderThickness="1"
+                                                                        CornerRadius="10"
+                                                                        Padding="9,4"
+                                                                        Margin="0,0,6,6"
+                                                                        ToolTip="{Binding PromptTemplate}">
+                                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding Title}"
+                                                                                   Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                                                                   FontSize="11"
+                                                                                   FontWeight="SemiBold"
+                                                                                   VerticalAlignment="Center"
+                                                                                   Margin="0,0,7,0" />
+                                                                        <Button Tag="{Binding}"
+                                                                                Click="OnRemoveCustomPromptClick"
+                                                                                Style="{StaticResource ActionBtnStyle}"
+                                                                                Width="18" Height="18"
+                                                                                Padding="0"
+                                                                                ToolTip="{DynamicResource Loc_CustomPrompts_DeleteTooltip}">
+                                                                            <Path Data="{StaticResource CloseIconGeometry}"
+                                                                                  Stroke="{DynamicResource ThemeTextSecondaryBrush}"
+                                                                                  StrokeThickness="1.4"
+                                                                                  Width="7" Height="7"
+                                                                                  Stretch="Uniform" />
+                                                                        </Button>
+                                                                    </StackPanel>
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="155" />
+                                                            <ColumnDefinition Width="8" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="8" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <!-- Left Input with In-Box Placeholder -->
+                                                        <Grid Grid.Column="0">
+                                                            <TextBox x:Name="NewPromptTitleBox"
+                                                                     Padding="10,6"
+                                                                     VerticalContentAlignment="Center"
+                                                                     ToolTip="{DynamicResource Loc_CustomPrompts_TitleTooltip}" />
+                                                            <TextBlock Text="{DynamicResource Loc_CustomPrompts_TitlePlaceholder}"
+                                                                       Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                                                       FontSize="11.5"
+                                                                       Margin="12,0,8,0"
+                                                                       VerticalAlignment="Center"
+                                                                       IsHitTestVisible="False">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding Text, ElementName=NewPromptTitleBox}" Value="">
+                                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </Grid>
+
+                                                        <!-- Right Input with In-Box Placeholder -->
+                                                        <Grid Grid.Column="2">
+                                                            <TextBox x:Name="NewPromptTemplateBox"
+                                                                     Padding="10,6"
+                                                                     VerticalContentAlignment="Center"
+                                                                     ToolTip="{DynamicResource Loc_CustomPrompts_BodyTooltip}" />
+                                                            <TextBlock Text="{DynamicResource Loc_CustomPrompts_BodyPlaceholder}"
+                                                                       Foreground="{DynamicResource ThemeTextMutedBrush}"
+                                                                       FontSize="11.5"
+                                                                       Margin="12,0,8,0"
+                                                                       VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       IsHitTestVisible="False">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding Text, ElementName=NewPromptTemplateBox}" Value="">
+                                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </Grid>
+
+                                                        <Button Grid.Column="4"
+                                                                Content="{DynamicResource Loc_CustomPrompts_AddBtn}"
+                                                                Click="OnAddCustomPromptClick"
+                                                                Style="{StaticResource ActionBtnStyle}"
+                                                                FontSize="11"
+                                                                Padding="12,6" />
+                                                    </Grid>
+                                                </StackPanel>
+                                            </Border>
                                         </StackPanel>
                                     </Border>
                                 </StackPanel>

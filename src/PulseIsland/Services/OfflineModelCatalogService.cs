@@ -6,7 +6,7 @@ using PulseIsland.Translation;
 namespace PulseIsland.Services;
 
 /// <summary>
-/// Manages the catalog of offline ONNX translation models, calculates disk usage on G:,
+/// Manages the catalog of offline ONNX translation models, calculates portable drive disk usage,
 /// and coordinates downloading/removing models strictly inside <portable-root>\models\.
 /// </summary>
 public sealed class OfflineModelCatalogService
@@ -18,7 +18,7 @@ public sealed class OfflineModelCatalogService
             DisplayName: "Opus-MT: English → Russian (ONNX)",
             SourceLang: "en",
             TargetLang: "ru",
-            Description: "Compact and fast neural translation model from English to Russian.",
+            Description: "Compact, fast offline neural translation from English to Russian.",
             TotalApproximateBytes: 295L * 1024 * 1024,
             Files: new List<OfflineModelFileEntry>
             {
@@ -34,7 +34,7 @@ public sealed class OfflineModelCatalogService
             DisplayName: "Opus-MT: Russian → English (ONNX)",
             SourceLang: "ru",
             TargetLang: "en",
-            Description: "Local neural translation model from Russian to English.",
+            Description: "Local offline neural translation from Russian to English.",
             TotalApproximateBytes: 295L * 1024 * 1024,
             Files: new List<OfflineModelFileEntry>
             {
@@ -66,7 +66,7 @@ public sealed class OfflineModelCatalogService
             DisplayName: "Opus-MT: Multilingual → English (ONNX)",
             SourceLang: "auto",
             TargetLang: "en",
-            Description: "Universal offline model translating multiple languages into English.",
+            Description: "Universal offline model translating many languages into English.",
             TotalApproximateBytes: 310L * 1024 * 1024,
             Files: new List<OfflineModelFileEntry>
             {
@@ -116,7 +116,8 @@ public sealed class OfflineModelCatalogService
             {
                 string folderName = Path.GetFileName(dir);
                 if (folderName.StartsWith('_') ||
-                    BuiltInCatalog.Any(c => string.Equals(c.ModelId, folderName, StringComparison.OrdinalIgnoreCase)))
+                    BuiltInCatalog.Any(c => string.Equals(c.ModelId, folderName, StringComparison.OrdinalIgnoreCase)) ||
+                    LocalLlmCatalogService.BuiltInModels.Any(m => string.Equals(m.ModelId, folderName, StringComparison.OrdinalIgnoreCase)))
                     continue;
 
                 bool installed = IsModelDirectoryComplete(dir);
@@ -138,15 +139,20 @@ public sealed class OfflineModelCatalogService
 
     private static (string DisplayName, string Description) GetLocalizedModelMeta(OfflineModelCatalogEntry entry)
     {
-        if (LocalizationService.IsRussian)
-            return (entry.DisplayName, entry.Description);
-
         return entry.ModelId switch
         {
-            "opus-mt-en-ru" => ("Opus-MT: English → Russian (ONNX)", "Compact, fast offline neural translation from English to Russian."),
-            "opus-mt-ru-en" => ("Opus-MT: Russian → English (ONNX)", "Local offline neural translation from Russian to English."),
-            "opus-mt-de-ru" => ("Opus-MT: German → Russian (ONNX)", "Offline neural translation model from German to Russian."),
-            "opus-mt-mul-en" => ("Opus-MT: Multilingual → English (ONNX)", "Universal offline model translating many languages into English."),
+            "opus-mt-en-ru" => (
+                LocalizationService.Pick("Opus-MT: English → Russian (ONNX)", "Opus-MT: Английский → Русский (ONNX)"),
+                LocalizationService.Pick("Compact, fast offline neural translation from English to Russian.", "Компактная и быстрая нейросеть перевода с английского на русский язык.")),
+            "opus-mt-ru-en" => (
+                LocalizationService.Pick("Opus-MT: Russian → English (ONNX)", "Opus-MT: Русский → Английский (ONNX)"),
+                LocalizationService.Pick("Local offline neural translation from Russian to English.", "Локальная модель перевода с русского на английский язык.")),
+            "opus-mt-de-ru" => (
+                LocalizationService.Pick("Opus-MT: German → Russian (ONNX)", "Opus-MT: Немецкий → Русский (ONNX)"),
+                LocalizationService.Pick("Offline neural translation model from German to Russian.", "Офлайн-модель перевода с немецкого на русский язык.")),
+            "opus-mt-mul-en" => (
+                LocalizationService.Pick("Opus-MT: Multilingual → English (ONNX)", "Opus-MT: Многоязычный → Английский (ONNX)"),
+                LocalizationService.Pick("Universal offline model translating many languages into English.", "Универсальная модель для перевода со множества языков на английский.")),
             _ => (entry.DisplayName, entry.Description)
         };
     }
@@ -182,7 +188,9 @@ public sealed class OfflineModelCatalogService
     {
         var entry = BuiltInCatalog.FirstOrDefault(m =>
             string.Equals(m.ModelId, modelId, StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException(LocalizationService.Pick($"Model '{modelId}' was not found in catalog.", $"Модель '{modelId}' не найдена в каталоге."));
+            ?? throw new InvalidOperationException(LocalizationService.Pick(
+                $"Model '{modelId}' was not found in catalog.",
+                $"Модель '{modelId}' не найдена в каталоге."));
 
         using var downloader = new HuggingFaceDownloader();
         int fileCount = entry.Files.Count;

@@ -19,12 +19,17 @@ public partial class SettingsWindow : Window
     private readonly MouseBatteryService? _mouseBatteryService;
     private readonly OfflineModelCatalogService _modelCatalogService = new();
     private readonly LocalLlmCatalogService _aiCatalogService = new();
+    private readonly WhisperVoiceService _whisperService = new();
+    private readonly System.Collections.ObjectModel.ObservableCollection<CustomAiPromptChip> _customPrompts = new();
     private CancellationTokenSource? _downloadCts;
     private bool _isSettingsMouseBoltBlinking;
     private string _recordingHotkeyTarget = "None"; // "None", "Lasso", "Clipboard"
     private string _selectedOfflineModelId = "opus-mt-en-ru";
     private bool _clearApiKeyRequested;
     private bool _isInitializingUi = true;
+    private bool _isSaved;
+    private bool _isClosing;
+    private AppLanguage _initialLanguage;
     private bool _suppressHexSync;
     private string _activeColorTarget = "Primary";
     private double _pickerHue = 198.0;
@@ -45,6 +50,7 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         _settingsService = settingsService;
         _mouseBatteryService = mouseBatteryService;
+        _initialLanguage = _settingsService.Current.UiLanguage;
 
         if (_mouseBatteryService is not null)
             _mouseBatteryService.BatteryUpdated += OnServiceMouseBatteryUpdated;
@@ -52,14 +58,74 @@ public partial class SettingsWindow : Window
         Closed += (_, _) =>
         {
             _downloadCts?.Cancel();
+            _whisperService.Dispose();
+            if (!_isSaved)
+            {
+                LocalizationService.ApplyLanguage(_initialLanguage);
+                ThemeService.ApplyTheme(_settingsService.Current.ThemeStyle);
+            }
             if (_mouseBatteryService is not null)
                 _mouseBatteryService.BatteryUpdated -= OnServiceMouseBatteryUpdated;
         };
+        CustomPromptsListControl.ItemsSource = _customPrompts;
         PopulateStaticLists();
         LoadFromSettings(_settingsService.Current);
         _isInitializingUi = false;
-        RefreshOfflineModelsUi();
         UpdateSettingsMouseBatteryPreview(_mouseBatteryService?.LastSnapshot ?? default);
+
+        // Load heavy disk/COM/WMI probes asynchronously after window renders so Settings opens instantaneously
+        _ = LoadHeavySettingsDataAsync();
+    }
+
+    private async Task LoadHeavySettingsDataAsync()
+    {
+        try
+        {
+            string? savedAudioId = _settingsService.Current.AudioDeviceId;
+            string selectedOfflineId = _selectedOfflineModelId;
+            string selectedAiId = GetSelectedAiModelId();
+
+            var audioTask = Task.Run(() =>
+            {
+                var options = new List<AudioDeviceOptionDto>
+                {
+                    new(null, LocalizationService.Pick("System Default Audio Device (Default)", "Системное устройство по умолчанию (Default)"))
+                };
+                foreach (var dev in WasapiAudioCaptureService.GetRenderDevices())
+                {
+                    options.Add(new AudioDeviceOptionDto(dev.Id, $"{dev.Name} ({dev.Id[..Math.Min(12, dev.Id.Length)]}...)"));
+                }
+                return options;
+            });
+
+            var modelsTask = Task.Run(() =>
+            {
+                var disk = _modelCatalogService.GetDiskSpaceSummary();
+                var statuses = _modelCatalogService.GetModelStatuses(selectedOfflineId);
+                var aiStatus = _aiCatalogService.GetStatus(selectedAiId);
+                var whisperReady = WhisperVoiceService.IsReady();
+                var whisperStatus = WhisperVoiceService.GetStatusText();
+                return (disk, statuses, aiStatus, whisperReady, whisperStatus);
+            });
+
+            var audioOptions = await audioTask;
+            if (!IsLoaded && !IsVisible) return;
+
+            AudioDeviceCombo.ItemsSource = audioOptions;
+            AudioDeviceCombo.SelectedValue = savedAudioId;
+            if (AudioDeviceCombo.SelectedIndex < 0 && audioOptions.Count > 0)
+                AudioDeviceCombo.SelectedIndex = 0;
+
+            var (disk, statuses, aiStatus, whisperReady, whisperStatus) = await modelsTask;
+            if (!IsLoaded && !IsVisible) return;
+
+            ApplyOfflineModelsSnapshot(disk, statuses, aiStatus);
+            ApplyWhisperStatusSnapshot(whisperReady, whisperStatus);
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn($"SettingsWindow async data load warning: {ex.Message}");
+        }
     }
 
     private void OnWindowLoaded(object sender, RoutedEventArgs e)
@@ -82,7 +148,7 @@ public partial class SettingsWindow : Window
 
     private void OnWindowMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.LeftButton == MouseButtonState.Pressed)
+        if (e.LeftButton == MouseButtonState.Pressed && !IsInsideInteractive(e.OriginalSource as DependencyObject))
         {
             try
             {
@@ -93,6 +159,26 @@ public partial class SettingsWindow : Window
                 // Ignore if released mid-drag
             }
         }
+    }
+
+    private static bool IsInsideInteractive(DependencyObject? source)
+    {
+        while (source is not null)
+        {
+            if (source is System.Windows.Controls.Primitives.ButtonBase
+                or System.Windows.Controls.Primitives.TextBoxBase
+                or PasswordBox
+                or ComboBox
+                or Slider
+                or System.Windows.Controls.Primitives.Thumb
+                or System.Windows.Controls.Primitives.ScrollBar
+                or TabItem)
+            {
+                return true;
+            }
+            source = DwmBackdropService.GetParentSafe(source);
+        }
+        return false;
     }
 
     private void OnHeaderMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -127,9 +213,14 @@ public partial class SettingsWindow : Window
     {
         TargetLangCombo.ItemsSource = LanguageCatalog.SupportedLanguages;
         ManualSourceLangCombo.ItemsSource = LanguageCatalog.SupportedLanguages;
+        AiModelCombo.ItemsSource = LocalLlmCatalogService.BuiltInModels;
 
         RefreshMonitorsList();
-        RefreshAudioDevicesList();
+        AudioDeviceCombo.ItemsSource = new List<AudioDeviceOptionDto>
+        {
+            new(null, LocalizationService.Pick("System Default Audio Device (Default)", "Системное устройство по умолчанию (Default)"))
+        };
+        AudioDeviceCombo.SelectedIndex = 0;
         PopulatePresetColorSwatches();
     }
 
@@ -164,37 +255,47 @@ public partial class SettingsWindow : Window
 
     private void RefreshMonitorsList()
     {
+        int prevIndex = MonitorCombo.Items.Count > 0 && MonitorCombo.SelectedIndex >= 0
+            ? MonitorCombo.SelectedIndex
+            : _settingsService.Current.MonitorIndex;
         var monitors = MonitorService.GetAllMonitors(this);
-        int prevIndex = MonitorCombo.SelectedIndex;
         MonitorCombo.Items.Clear();
         foreach (var m in monitors)
         {
             string primaryTag = m.Index == 0 ? LocalizationService.Pick(" [Primary]", " [Основной]") : string.Empty;
-            string monLabel = LocalizationService.Pick("Monitor", "Монитор");
-            MonitorCombo.Items.Add($"{monLabel} #{m.Index + 1}: {m.PhysicalBounds.Width}×{m.PhysicalBounds.Height}{primaryTag}");
+            MonitorCombo.Items.Add(LocalizationService.Pick(
+                $"Monitor #{m.Index + 1}: {m.PhysicalBounds.Width}×{m.PhysicalBounds.Height}{primaryTag}",
+                $"Монитор #{m.Index + 1}: {m.PhysicalBounds.Width}×{m.PhysicalBounds.Height}{primaryTag}"));
         }
         if (MonitorCombo.Items.Count > 0)
-            MonitorCombo.SelectedIndex = Math.Clamp(prevIndex >= 0 ? prevIndex : _settingsService.Current.MonitorIndex, 0, MonitorCombo.Items.Count - 1);
+            MonitorCombo.SelectedIndex = Math.Clamp(prevIndex, 0, MonitorCombo.Items.Count - 1);
     }
 
-    private void RefreshAudioDevicesList()
+    private void RefreshAudioDevicesListAsync()
     {
         object? prevSelected = AudioDeviceCombo.SelectedValue;
-        var options = new List<AudioDeviceOptionDto>
+        string defaultLabel = LocalizationService.Pick("System Default Audio Device (Default)", "Системное устройство по умолчанию (Default)");
+        _ = Task.Run(() =>
         {
-            new(null, LocalizationService.Pick("System Default Audio Device (Default)", "Системное устройство по умолчанию (Default)"))
-        };
+            var options = new List<AudioDeviceOptionDto>
+            {
+                new(null, defaultLabel)
+            };
 
-        foreach (var dev in WasapiAudioCaptureService.GetRenderDevices())
-        {
-            options.Add(new AudioDeviceOptionDto(dev.Id, $"{dev.Name} ({dev.Id[..Math.Min(12, dev.Id.Length)]}...)"));
-        }
+            foreach (var dev in WasapiAudioCaptureService.GetRenderDevices())
+            {
+                options.Add(new AudioDeviceOptionDto(dev.Id, $"{dev.Name} ({dev.Id[..Math.Min(12, dev.Id.Length)]}...)"));
+            }
 
-        AudioDeviceCombo.ItemsSource = options;
-        if (prevSelected is not null)
-            AudioDeviceCombo.SelectedValue = prevSelected;
-        if (AudioDeviceCombo.SelectedIndex < 0)
-            AudioDeviceCombo.SelectedIndex = 0;
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (!IsLoaded && !IsVisible) return;
+                AudioDeviceCombo.ItemsSource = options;
+                AudioDeviceCombo.SelectedValue = prevSelected;
+                if (AudioDeviceCombo.SelectedIndex < 0 && options.Count > 0)
+                    AudioDeviceCombo.SelectedIndex = 0;
+            });
+        });
     }
 
     private void RefreshLanguageDropdownLabels()
@@ -207,6 +308,40 @@ public partial class SettingsWindow : Window
         ManualSourceLangCombo.ItemsSource = LanguageCatalog.SupportedLanguages;
         if (target is not null) TargetLangCombo.SelectedValue = target;
         if (source is not null) ManualSourceLangCombo.SelectedValue = source;
+    }
+
+    private static void RefreshComboBoxSelectionBox(ComboBox? combo)
+    {
+        if (combo is null || combo.SelectedItem is null)
+            return;
+        var selected = combo.SelectedItem;
+        combo.SelectedItem = null;
+        combo.SelectedItem = selected;
+    }
+
+    private AppLanguage GetSelectedUiLanguage()
+    {
+        if (UiLanguageCombo?.SelectedItem is ComboBoxItem langItem &&
+            Enum.TryParse<AppLanguage>(langItem.Tag?.ToString(), out var lang))
+        {
+            return lang;
+        }
+        return LocalizationService.CurrentLanguage;
+    }
+
+    private void UpdateHotkeyRecorderButtons()
+    {
+        string pressKeys = LocalizationService.Pick("Press keys... (Esc)", "Нажмите клавиши... (Esc)");
+        string pressShort = LocalizationService.Pick("Press... (Esc)", "Нажмите... (Esc)");
+        RecordHotkeyBtn.Content = _recordingHotkeyTarget == "Lasso"
+            ? pressKeys
+            : LocalizationService.Get("Loc_Btn_RecordHotkey");
+        RecordClipboardHotkeyBtn.Content = _recordingHotkeyTarget == "Clipboard"
+            ? pressKeys
+            : LocalizationService.Get("Loc_Btn_RecordHotkey");
+        RecordAiHotkeyBtn.Content = _recordingHotkeyTarget == "AiFeed"
+            ? pressShort
+            : LocalizationService.Get("Loc_Btn_RecordShort");
     }
 
     private void RefreshDynamicLocalizedTexts()
@@ -237,8 +372,39 @@ public partial class SettingsWindow : Window
                 : LocalizationService.Get("Loc_Btn_MoreSettings");
         }
 
+        UpdateHotkeyRecorderButtons();
+
+        // Force closed WPF ComboBoxes using {DynamicResource} ComboBoxItems to refresh SelectionBoxItem immediately
+        bool prevInit = _isInitializingUi;
+        _isInitializingUi = true;
+        try
+        {
+            RefreshComboBoxSelectionBox(UiLanguageCombo);
+            RefreshComboBoxSelectionBox(ThemeStyleCombo);
+            RefreshComboBoxSelectionBox(MouseBatteryModeCombo);
+            RefreshComboBoxSelectionBox(MouseLowBatterySoundCombo);
+            RefreshComboBoxSelectionBox(NotificationSoundCombo);
+            RefreshComboBoxSelectionBox(TranslationModeCombo);
+            RefreshComboBoxSelectionBox(OcrModeCombo);
+            RefreshComboBoxSelectionBox(OnlineProviderCombo);
+            RefreshComboBoxSelectionBox(AiBackendCombo);
+            RefreshComboBoxSelectionBox(AiFeedActionCombo);
+            RefreshComboBoxSelectionBox(WaveStyleCombo);
+            RefreshComboBoxSelectionBox(WaveColorModeCombo);
+
+            var selectedAiModel = AiModelCombo.SelectedValue;
+            AiModelCombo.ItemsSource = null;
+            AiModelCombo.ItemsSource = LocalLlmCatalogService.BuiltInModels;
+            if (selectedAiModel is not null)
+                AiModelCombo.SelectedValue = selectedAiModel;
+        }
+        finally
+        {
+            _isInitializingUi = prevInit;
+        }
+
         RefreshMonitorsList();
-        RefreshAudioDevicesList();
+        RefreshAudioDevicesListAsync();
         RefreshLanguageDropdownLabels();
         RefreshOfflineModelsUi();
         UpdateSettingsMouseBatteryPreview(_mouseBatteryService?.LastSnapshot ?? default);
@@ -303,6 +469,7 @@ public partial class SettingsWindow : Window
 
         // Tab 2: Translator
         SelectByTag(TranslationModeCombo, s.TranslationMode.ToString());
+        SelectByTag(OcrModeCombo, s.OcrMode.ToString());
         SelectByTag(OnlineProviderCombo, s.OnlineProvider.ToString());
 
         TargetLangCombo.SelectedValue = LanguageCatalog.FindOrDefault(s.TargetLanguage, "en").Code;
@@ -327,11 +494,19 @@ public partial class SettingsWindow : Window
         PopupAutoHideBox.Text = s.TranslationPopupAutoHideSeconds.ToString(CultureInfo.InvariantCulture);
 
         EnableLocalAiCheck.IsChecked = s.EnableLocalAiAssistant;
+        AiModelCombo.SelectedValue = LocalLlmCatalogService.FindModel(s.SelectedAiModelId).ModelId;
         SelectByTag(AiBackendCombo, s.AiBackend.ToString());
         AiWeatherCityBox.Text = s.AiWeatherCity;
         EnableAiFeedHotkeyCheck.IsChecked = s.EnableAiFeedHotkey;
         AiFeedHotkeyBox.Text = s.AiFeedHotkeyGesture;
         SelectByTag(AiFeedActionCombo, s.AiFeedAction.ToString());
+        _customPrompts.Clear();
+        var promptSource = s.CustomAiPrompts is { Count: > 0 } ? s.CustomAiPrompts : AppSettings.GetDefaultCustomAiPrompts(s.UiLanguage);
+        foreach (var chip in promptSource.Take(8))
+        {
+            if (!string.IsNullOrWhiteSpace(chip.Title) && !string.IsNullOrWhiteSpace(chip.PromptTemplate))
+                _customPrompts.Add(chip);
+        }
         RefreshAiModelUi();
 
         // Tab 3: Music & Waves
@@ -355,11 +530,113 @@ public partial class SettingsWindow : Window
         UpdateWaveColorPreviews();
     }
 
+    private IReadOnlyList<OfflineModelStatusDto> _offlineModelStatuses = Array.Empty<OfflineModelStatusDto>();
+
     private void RefreshOfflineModelsUi()
     {
-        var disk = _modelCatalogService.GetDiskSpaceSummary();
+        string selectedOfflineId = _selectedOfflineModelId;
+        string selectedAiId = GetSelectedAiModelId();
+        _ = Task.Run(() =>
+        {
+            var disk = _modelCatalogService.GetDiskSpaceSummary();
+            var statuses = _modelCatalogService.GetModelStatuses(selectedOfflineId);
+            var aiStatus = _aiCatalogService.GetStatus(selectedAiId);
+            var whisperReady = WhisperVoiceService.IsReady();
+            var whisperStatus = WhisperVoiceService.GetStatusText();
+            Dispatcher.InvokeAsync(() =>
+            {
+                ApplyOfflineModelsSnapshot(disk, statuses, aiStatus);
+                ApplyWhisperStatusSnapshot(whisperReady, whisperStatus);
+            });
+        });
+    }
+
+    private void ApplyWhisperStatusSnapshot(bool isReady, string statusText)
+    {
+        if (WhisperStatusText is not null)
+            WhisperStatusText.Text = statusText;
+        if (WhisperReadyBadge is not null)
+            WhisperReadyBadge.Visibility = isReady ? Visibility.Visible : Visibility.Collapsed;
+        if (DownloadWhisperBtn is not null)
+            DownloadWhisperBtn.Content = isReady
+                ? LocalizationService.Pick("Verify", "Проверить")
+                : LocalizationService.Get("Loc_Download");
+    }
+
+    private void ApplyOfflineModelsSnapshot(
+        DiskSpaceSummaryDto disk,
+        IReadOnlyList<OfflineModelStatusDto> statuses,
+        AiPackageStatus aiStatus)
+    {
         DiskSummaryText.Text = disk.SummaryText;
-        ModelsItemsControl.ItemsSource = _modelCatalogService.GetModelStatuses(_selectedOfflineModelId);
+        _offlineModelStatuses = statuses;
+
+        bool prevInit = _isInitializingUi;
+        _isInitializingUi = true;
+        try
+        {
+            OfflineModelCombo.ItemsSource = _offlineModelStatuses;
+            OfflineModelCombo.SelectedValue = _selectedOfflineModelId;
+            if (OfflineModelCombo.SelectedIndex < 0 && _offlineModelStatuses.Count > 0)
+            {
+                OfflineModelCombo.SelectedIndex = 0;
+                _selectedOfflineModelId = _offlineModelStatuses[0].ModelId;
+            }
+        }
+        finally
+        {
+            _isInitializingUi = prevInit;
+        }
+
+        UpdateSelectedOfflineModelCard();
+        ApplyAiStatusSnapshot(aiStatus);
+    }
+
+    private void UpdateSelectedOfflineModelCard()
+    {
+        if (OfflineModelTitleText is null)
+            return;
+
+        var selected = _offlineModelStatuses.FirstOrDefault(m =>
+            string.Equals(m.ModelId, _selectedOfflineModelId, StringComparison.OrdinalIgnoreCase))
+            ?? _offlineModelStatuses.FirstOrDefault();
+
+        if (selected is null)
+            return;
+
+        OfflineModelTitleText.Text = selected.DisplayName;
+        OfflineModelDescText.Text = selected.Description;
+        OfflineModelSizeText.Text = selected.SizeText;
+        OfflineModelActiveBadge.Visibility = selected.IsInstalled ? Visibility.Visible : Visibility.Collapsed;
+        DownloadOfflineModelBtn.Content = selected.IsInstalled
+            ? LocalizationService.Pick("Verify", "Проверить")
+            : LocalizationService.Get("Loc_Download");
+    }
+
+    private void OnOfflineModelSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializingUi)
+            return;
+
+        if (OfflineModelCombo.SelectedValue is string id && !string.IsNullOrWhiteSpace(id))
+        {
+            _selectedOfflineModelId = id;
+            UpdateSelectedOfflineModelCard();
+        }
+    }
+
+    private string GetSelectedAiModelId()
+    {
+        return AiModelCombo?.SelectedValue is string id && !string.IsNullOrWhiteSpace(id)
+            ? id
+            : LocalLlmCatalogService.DefaultModelId;
+    }
+
+    private void OnAiModelSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializingUi)
+            return;
+
         RefreshAiModelUi();
     }
 
@@ -368,7 +645,20 @@ public partial class SettingsWindow : Window
         if (AiModelStatusText is null)
             return;
 
-        var st = _aiCatalogService.GetStatus();
+        string modelId = GetSelectedAiModelId();
+        var st = _aiCatalogService.GetStatus(modelId);
+        ApplyAiStatusSnapshot(st);
+    }
+
+    private void ApplyAiStatusSnapshot(AiPackageStatus st)
+    {
+        if (AiModelStatusText is null)
+            return;
+
+        if (AiModelTitleText is not null)
+            AiModelTitleText.Text = st.DisplayName;
+        if (AiModelDescText is not null)
+            AiModelDescText.Text = st.Description;
         AiModelStatusText.Text = st.StatusText;
         AiHardwareText.Text = LocalizationService.Pick($"Hardware: {st.HardwareSummary}", $"Оборудование: {st.HardwareSummary}");
         bool ready = st.IsModelInstalled && st.IsRuntimeInstalled;
@@ -385,17 +675,20 @@ public partial class SettingsWindow : Window
         if (_downloadCts is not null)
         {
             FooterStatusText.Text = LocalizationService.Pick(
-                "Wait for the current download to finish or cancel it.",
+                "Please wait for the active download to finish or cancel it.",
                 "Дождитесь завершения текущей загрузки или отмените её.");
             return;
         }
+
+        string modelId = GetSelectedAiModelId();
+        var entry = LocalLlmCatalogService.FindModel(modelId);
 
         _downloadCts = new CancellationTokenSource();
         DownloadProgressPanel.Visibility = Visibility.Visible;
         DownloadProgressBar.Value = 0;
         DownloadStatusText.Text = LocalizationService.Pick(
-            "Preparing download for Qwen 2.5 3B + llama-server...",
-            "Подготовка загрузки Qwen 2.5 3B + llama-server...");
+            $"Preparing download for {entry.ModelId} + llama-server...",
+            $"Подготовка загрузки {entry.ModelId} + llama-server...");
 
         var progress = new Progress<DownloadProgressInfo>(info =>
         {
@@ -405,26 +698,28 @@ public partial class SettingsWindow : Window
 
         try
         {
-            await _aiCatalogService.DownloadAiPackageAsync(progress, _downloadCts.Token);
+            await _aiCatalogService.DownloadAiPackageAsync(entry.ModelId, progress, _downloadCts.Token);
             FooterStatusText.Text = LocalizationService.Pick(
-                "Qwen 2.5 3B and GPU/CPU runtime downloaded successfully.",
-                "Qwen 2.5 3B и движок GPU/CPU успешно скачаны.");
+                $"{entry.DisplayName} and GPU/CPU runtime downloaded successfully.",
+                $"{entry.DisplayName} и движок GPU/CPU успешно скачаны.");
         }
         catch (OperationCanceledException)
         {
             FooterStatusText.Text = LocalizationService.Pick(
-                "Qwen 2.5 3B download paused (click \"Resume\" to continue where it left off).",
-                "Загрузка Qwen 2.5 3B приостановлена (при нажатии «Докачать» продолжится с места остановки).");
+                $"Download of {entry.ModelId} paused (click \"Resume\" to continue where it left off).",
+                $"Загрузка {entry.ModelId} приостановлена (при нажатии «Докачать» продолжится с места остановки).");
         }
         catch (Exception ex)
         {
-            FooterStatusText.Text = LocalizationService.Pick($"AI model download error: {ex.Message}", $"Ошибка загрузки ИИ-модели: {ex.Message}");
-            LogService.Error("AI 3B package download failed.", ex);
+            FooterStatusText.Text = LocalizationService.Pick($"AI model download failed: {ex.Message}", $"Ошибка загрузки ИИ-модели: {ex.Message}");
+            LogService.Error($"AI package download failed for {entry.ModelId}.", ex);
             System.Windows.MessageBox.Show(
                 this,
                 LocalizationService.Pick(
-                    $"Failed to download Qwen 2.5 3B or llama-server runtime:\n\n{ex.Message}\n\nModel folder: {LocalLlmCatalogService.ModelDirectory}\nRuntime folder: {LocalLlmCatalogService.LlamaRuntimeDirectory}",
-                    $"Не удалось скачать Qwen 2.5 3B или движок llama-server:\n\n{ex.Message}\n\nПапка модели: {LocalLlmCatalogService.ModelDirectory}\nПапка движка: {LocalLlmCatalogService.LlamaRuntimeDirectory}"),
+                    $"Failed to download {entry.DisplayName} or llama-server runtime:\n\n{ex.Message}\n\n" +
+                    $"Model folder: {LocalLlmCatalogService.GetModelDirectory(entry.ModelId)}\nRuntime folder: {LocalLlmCatalogService.LlamaRuntimeDirectory}",
+                    $"Не удалось скачать {entry.DisplayName} или движок llama-server:\n\n{ex.Message}\n\n" +
+                    $"Папка модели: {LocalLlmCatalogService.GetModelDirectory(entry.ModelId)}\nПапка движка: {LocalLlmCatalogService.LlamaRuntimeDirectory}"),
                 LocalizationService.Pick("AI Model Download Error", "Ошибка загрузки ИИ-модели"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -440,13 +735,182 @@ public partial class SettingsWindow : Window
 
     private void OnDeleteAiPackageClick(object sender, RoutedEventArgs e)
     {
-        if (_aiCatalogService.DeleteAiPackage())
+        string modelId = GetSelectedAiModelId();
+        if (_aiCatalogService.DeleteAiPackage(modelId))
         {
             FooterStatusText.Text = LocalizationService.Pick(
-                "Local Qwen 2.5 3B model files removed from disk.",
-                "Файлы локальной модели Qwen 2.5 3B удалены с диска.");
+                $"Local AI model files ({modelId}) deleted from disk.",
+                $"Файлы локальной модели {modelId} удалены с диска.");
             RefreshOfflineModelsUi();
         }
+    }
+
+    private async void OnDownloadWhisperClick(object sender, RoutedEventArgs e)
+    {
+        if (_downloadCts is not null)
+        {
+            FooterStatusText.Text = LocalizationService.Pick(
+                "Please wait for the active download to finish or cancel it.",
+                "Дождитесь завершения текущей загрузки или отмените её.");
+            return;
+        }
+
+        _downloadCts = new CancellationTokenSource();
+        DownloadProgressPanel.Visibility = Visibility.Visible;
+        DownloadProgressBar.Value = 0;
+        DownloadStatusText.Text = LocalizationService.Pick(
+            "Preparing Whisper voice dictation download (whisper.cpp + ggml-base)...",
+            "Подготовка загрузки голосовой диктовки Whisper (whisper.cpp + ggml-base)...");
+
+        var progress = new Progress<DownloadProgressInfo>(info =>
+        {
+            DownloadProgressBar.Value = info.Percentage;
+            DownloadStatusText.Text = $"{info.FileName} — {info.Percentage:0.0}% ({DiskSpaceSummaryDto.FormatBytes(info.BytesDownloaded)})";
+        });
+
+        try
+        {
+            await _whisperService.DownloadPackageAsync(progress, _downloadCts.Token);
+            FooterStatusText.Text = LocalizationService.Pick(
+                "Whisper voice dictation downloaded and ready to use!",
+                "Голосовая диктовка Whisper успешно скачана и готова к работе!");
+        }
+        catch (OperationCanceledException)
+        {
+            FooterStatusText.Text = LocalizationService.Pick(
+                "Whisper download paused (will resume on next click).",
+                "Загрузка Whisper приостановлена (при следующем нажатии продолжится с места остановки).");
+        }
+        catch (Exception ex)
+        {
+            FooterStatusText.Text = LocalizationService.Pick($"Whisper download error: {ex.Message}", $"Ошибка загрузки Whisper: {ex.Message}");
+            LogService.Error("Whisper package download failed.", ex);
+            System.Windows.MessageBox.Show(
+                this,
+                LocalizationService.Pick(
+                    $"Failed to download Whisper voice dictation package:\n\n{ex.Message}\n\n" +
+                    $"You can also download the files manually:\n" +
+                    $"1) {WhisperVoiceService.WhisperZipUrl} (extract .exe and .dll)\n" +
+                    $"2) {WhisperVoiceService.DefaultModelUrl} (ggml-base.bin)\n" +
+                    $"into folder:\n{WhisperVoiceService.WhisperDirectory}",
+                    $"Не удалось скачать пакет голосовой диктовки Whisper:\n\n{ex.Message}\n\n" +
+                    $"Вы также можете скачать файлы вручную:\n" +
+                    $"1) {WhisperVoiceService.WhisperZipUrl} (распаковать .exe и .dll)\n" +
+                    $"2) {WhisperVoiceService.DefaultModelUrl} (файл ggml-base.bin)\n" +
+                    $"в папку:\n{WhisperVoiceService.WhisperDirectory}"),
+                LocalizationService.Pick("Whisper Download Error", "Ошибка загрузки Whisper"),
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _downloadCts.Dispose();
+            _downloadCts = null;
+            DownloadProgressPanel.Visibility = Visibility.Collapsed;
+            RefreshOfflineModelsUi();
+        }
+    }
+
+    private void OnDeleteWhisperClick(object sender, RoutedEventArgs e)
+    {
+        if (_whisperService.DeletePackage())
+        {
+            FooterStatusText.Text = LocalizationService.Pick(
+                "Whisper voice dictation package deleted from disk.",
+                "Пакет голосовой диктовки Whisper удалён с диска.");
+            RefreshOfflineModelsUi();
+        }
+    }
+
+    private void OnAddCustomPromptClick(object sender, RoutedEventArgs e)
+    {
+        string title = (NewPromptTitleBox.Text ?? string.Empty).Trim();
+        string tpl = (NewPromptTemplateBox.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(tpl))
+        {
+            FooterStatusText.Text = LocalizationService.Pick(
+                "Enter a short button label and AI prompt text.",
+                "Укажите короткое название кнопки и текст запроса к ИИ.");
+            return;
+        }
+
+        if (_customPrompts.Count >= 8)
+        {
+            FooterStatusText.Text = LocalizationService.Pick(
+                "Maximum 8 custom quick buttons (delete one before adding).",
+                "Максимум 8 пользовательских быстрых кнопок (удалите лишнюю перед добавлением).");
+            return;
+        }
+
+        if (title.Length > 26)
+            title = title[..26].TrimEnd();
+
+        _customPrompts.Add(new CustomAiPromptChip(title, tpl));
+        NewPromptTitleBox.Text = string.Empty;
+        NewPromptTemplateBox.Text = string.Empty;
+        FooterStatusText.Text = LocalizationService.Pick(
+            $"Added quick button \"{title}\" (click \"Save settings\").",
+            $"Добавлена быстрая кнопка «{title}» (нажмите «Сохранить настройки»).");
+    }
+
+    private void OnRemoveCustomPromptClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: CustomAiPromptChip chip })
+        {
+            _customPrompts.Remove(chip);
+        }
+    }
+
+    private void OnResetCustomPromptsClick(object sender, RoutedEventArgs e)
+    {
+        _customPrompts.Clear();
+        foreach (var chip in AppSettings.GetDefaultCustomAiPrompts(GetSelectedUiLanguage()))
+            _customPrompts.Add(chip);
+        FooterStatusText.Text = LocalizationService.Pick(
+            "Default AI quick buttons restored.",
+            "Восстановлены стандартные быстрые кнопки ИИ.");
+    }
+
+    private void OnOpenOnboardingGuideClick(object sender, RoutedEventArgs e)
+    {
+        var win = new WelcomeOnboardingWindow(_settingsService)
+        {
+            Owner = this
+        };
+        win.Closed += (_, _) =>
+        {
+            if (win.AppliedChanges)
+            {
+                _initialLanguage = _settingsService.Current.UiLanguage;
+                LoadFromSettings(_settingsService.Current);
+                RefreshDynamicLocalizedTexts();
+                DwmBackdropService.ApplyToCard(this, MainSettingsCard, _settingsService.Current.EnableDwmBackdropBlur, 26);
+            }
+            else
+            {
+                // Keep SettingsWindow controls synced if onboarding reverted or previewed language
+                bool prevInit = _isInitializingUi;
+                _isInitializingUi = true;
+                try
+                {
+                    string langTag = LocalizationService.CurrentLanguage.ToString();
+                    foreach (var item in UiLanguageCombo.Items.OfType<ComboBoxItem>())
+                    {
+                        if (string.Equals(item.Tag?.ToString(), langTag, StringComparison.OrdinalIgnoreCase))
+                        {
+                            UiLanguageCombo.SelectedItem = item;
+                            break;
+                        }
+                    }
+                }
+                finally
+                {
+                    _isInitializingUi = prevInit;
+                }
+                RefreshDynamicLocalizedTexts();
+            }
+        };
+        win.ShowDialog();
     }
 
     // --- Interactive Hotkey Recorder ---
@@ -455,14 +919,10 @@ public partial class SettingsWindow : Window
     {
         bool start = _recordingHotkeyTarget != "Lasso";
         _recordingHotkeyTarget = start ? "Lasso" : "None";
-        RecordHotkeyBtn.Content = start
-            ? LocalizationService.Pick("Press keys... (Esc)", "Нажмите клавиши... (Esc)")
-            : LocalizationService.Get("Loc_Btn_RecordHotkey");
-        RecordClipboardHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
-        RecordAiHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordShort");
+        UpdateHotkeyRecorderButtons();
         if (start)
             FooterStatusText.Text = LocalizationService.Pick(
-                "Hold modifiers (Ctrl/Alt/Shift) and press a key for screen lasso...",
+                "Press modifiers (Ctrl/Alt/Shift) and a key for screen lasso...",
                 "Зажмите модификаторы (Ctrl/Alt/Shift) и клавишу для обводки...");
     }
 
@@ -470,14 +930,10 @@ public partial class SettingsWindow : Window
     {
         bool start = _recordingHotkeyTarget != "Clipboard";
         _recordingHotkeyTarget = start ? "Clipboard" : "None";
-        RecordClipboardHotkeyBtn.Content = start
-            ? LocalizationService.Pick("Press keys... (Esc)", "Нажмите клавиши... (Esc)")
-            : LocalizationService.Get("Loc_Btn_RecordHotkey");
-        RecordHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
-        RecordAiHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordShort");
+        UpdateHotkeyRecorderButtons();
         if (start)
             FooterStatusText.Text = LocalizationService.Pick(
-                "Hold modifiers (Ctrl/Alt/Shift) and press a key for clipboard translation...",
+                "Press modifiers (Ctrl/Alt/Shift) and a key for clipboard translation...",
                 "Зажмите модификаторы (Ctrl/Alt/Shift) и клавишу для перевода буфера...");
     }
 
@@ -485,14 +941,10 @@ public partial class SettingsWindow : Window
     {
         bool start = _recordingHotkeyTarget != "AiFeed";
         _recordingHotkeyTarget = start ? "AiFeed" : "None";
-        RecordAiHotkeyBtn.Content = start
-            ? LocalizationService.Pick("Press... (Esc)", "Нажмите... (Esc)")
-            : LocalizationService.Get("Loc_Btn_RecordShort");
-        RecordHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
-        RecordClipboardHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
+        UpdateHotkeyRecorderButtons();
         if (start)
             FooterStatusText.Text = LocalizationService.Pick(
-                "Hold modifiers (Ctrl/Alt/Shift) and press a key to send text to AI...",
+                "Press modifiers (Ctrl/Alt/Shift) and a key to send text to AI...",
                 "Зажмите модификаторы (Ctrl/Alt/Shift) и клавишу для отправки текста в нейросеть...");
     }
 
@@ -507,9 +959,7 @@ public partial class SettingsWindow : Window
         if (key == Key.Escape)
         {
             _recordingHotkeyTarget = "None";
-            RecordHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
-            RecordClipboardHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
-            RecordAiHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordShort");
+            UpdateHotkeyRecorderButtons();
             FooterStatusText.Text = string.Empty;
             return;
         }
@@ -537,14 +987,14 @@ public partial class SettingsWindow : Window
         {
             ClipboardHotkeyBox.Text = sb.ToString();
             FooterStatusText.Text = LocalizationService.Pick(
-                $"Recorded clipboard translate hotkey: {ClipboardHotkeyBox.Text}",
+                $"Recorded clipboard hotkey: {ClipboardHotkeyBox.Text}",
                 $"Записана клавиша перевода буфера: {ClipboardHotkeyBox.Text}");
         }
         else if (_recordingHotkeyTarget == "AiFeed")
         {
             AiFeedHotkeyBox.Text = sb.ToString();
             FooterStatusText.Text = LocalizationService.Pick(
-                $"Recorded AI feed hotkey: {AiFeedHotkeyBox.Text}",
+                $"Recorded AI hotkey: {AiFeedHotkeyBox.Text}",
                 $"Записана клавиша для нейросети: {AiFeedHotkeyBox.Text}");
         }
         else
@@ -556,9 +1006,7 @@ public partial class SettingsWindow : Window
         }
 
         _recordingHotkeyTarget = "None";
-        RecordHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
-        RecordClipboardHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordHotkey");
-        RecordAiHotkeyBtn.Content = LocalizationService.Get("Loc_Btn_RecordShort");
+        UpdateHotkeyRecorderButtons();
     }
 
     // --- Offline Models Actions ---
@@ -579,29 +1027,22 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            FooterStatusText.Text = LocalizationService.Pick($"Could not open models folder: {ex.Message}", $"Не удалось открыть папку моделей: {ex.Message}");
+            FooterStatusText.Text = LocalizationService.Pick(
+                $"Failed to open models folder: {ex.Message}",
+                $"Не удалось открыть папку моделей: {ex.Message}");
         }
     }
 
-    private void OnSelectOfflineModelClick(object sender, RoutedEventArgs e)
+    private async void OnDownloadSelectedOfflineModelClick(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: string modelId })
-        {
-            _selectedOfflineModelId = modelId;
-            RefreshOfflineModelsUi();
-            FooterStatusText.Text = LocalizationService.Pick($"Selected offline model: {modelId}", $"Выбрана офлайн-модель: {modelId}");
-        }
-    }
-
-    private async void OnDownloadOfflineModelClick(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: string modelId })
+        string modelId = _selectedOfflineModelId;
+        if (string.IsNullOrWhiteSpace(modelId))
             return;
 
         if (_downloadCts is not null)
         {
             FooterStatusText.Text = LocalizationService.Pick(
-                "Wait for the current download to finish or cancel it.",
+                "Please wait for the active download to finish or cancel it.",
                 "Дождитесь завершения текущей загрузки или отмените её.");
             return;
         }
@@ -609,7 +1050,9 @@ public partial class SettingsWindow : Window
         _downloadCts = new CancellationTokenSource();
         DownloadProgressPanel.Visibility = Visibility.Visible;
         DownloadProgressBar.Value = 0;
-        DownloadStatusText.Text = LocalizationService.Pick($"Preparing download for {modelId}...", $"Подготовка загрузки {modelId}...");
+        DownloadStatusText.Text = LocalizationService.Pick(
+            $"Preparing download for {modelId}...",
+            $"Подготовка загрузки {modelId}...");
 
         var progress = new Progress<DownloadProgressInfo>(info =>
         {
@@ -621,12 +1064,14 @@ public partial class SettingsWindow : Window
         {
             await _modelCatalogService.DownloadModelPackageAsync(modelId, progress, _downloadCts.Token);
             _selectedOfflineModelId = modelId;
-            FooterStatusText.Text = LocalizationService.Pick($"Model '{modelId}' downloaded successfully.", $"Модель '{modelId}' успешно скачана.");
+            FooterStatusText.Text = LocalizationService.Pick(
+                $"Model '{modelId}' downloaded successfully.",
+                $"Модель '{modelId}' успешно скачана.");
         }
         catch (OperationCanceledException)
         {
             FooterStatusText.Text = LocalizationService.Pick(
-                $"Download of '{modelId}' paused (will resume automatically next time).",
+                $"Download of '{modelId}' paused (will resume from where it left off next time).",
                 $"Загрузка '{modelId}' приостановлена (при следующем запуске докачается с места остановки).");
         }
         catch (Exception ex)
@@ -638,9 +1083,21 @@ public partial class SettingsWindow : Window
             System.Windows.MessageBox.Show(
                 this,
                 LocalizationService.Pick(
-                    $"Failed to download model '{modelId}' because network access for PulseIsland.exe was blocked:\n\n{ex.Message}\n\nWhat you can do:\n1) Allow PulseIsland.exe outbound access (port 443) in your firewall/antivirus/VPN and retry.\n2) Or manually download files from https://huggingface.co/Xenova/{modelId}/tree/main (need encoder_model.onnx and decoder_model.onnx from onnx/, plus source.spm, vocab.json, and config.json), place them in:\n{targetFolder}\nand click \"Refresh list\".",
-                    $"Не удалось скачать модель '{modelId}' из-за блокировки сетевого подключения для PulseIsland.exe:\n\n{ex.Message}\n\nЧто можно сделать:\n1) Разрешите PulseIsland.exe доступ в сеть (порт 443) в брандмауэре, антивирусе или VPN/фильтре трафика и повторите.\n2) Либо скачайте файлы вручную в браузере со страницы https://huggingface.co/Xenova/{modelId}/tree/main (нужны: encoder_model.onnx и decoder_model.onnx из папки onnx/, а также source.spm, vocab.json и config.json), положите их в папку:\n{targetFolder}\nи нажмите «Обновить список»."),
-                LocalizationService.Pick("Model Download Blocked", "Загрузка модели заблокирована сетью"),
+                    $"Failed to download model '{modelId}' due to a blocked network connection for PulseIsland.exe:\n\n" +
+                    $"{ex.Message}\n\n" +
+                    "What you can do:\n" +
+                    "1) Allow PulseIsland.exe internet access (port 443) in your firewall, antivirus, or VPN and try again.\n" +
+                    $"2) Or download the files manually in a browser from https://huggingface.co/Xenova/{modelId}/tree/main " +
+                    $"(needed: encoder_model.onnx and decoder_model.onnx from onnx/, plus source.spm, vocab.json, and config.json), " +
+                    $"place them into:\n{targetFolder}\nand click \"Refresh list\".",
+                    $"Не удалось скачать модель '{modelId}' из-за блокировки сетевого подключения для PulseIsland.exe:\n\n" +
+                    $"{ex.Message}\n\n" +
+                    "Что можно сделать:\n" +
+                    "1) Разрешите PulseIsland.exe доступ в сеть (порт 443) в брандмауэре, антивирусе или VPN/фильтре трафика и повторите.\n" +
+                    $"2) Либо скачайте файлы вручную в браузере со страницы https://huggingface.co/Xenova/{modelId}/tree/main " +
+                    $"(нужны: encoder_model.onnx и decoder_model.onnx из папки onnx/, а также source.spm, vocab.json и config.json), " +
+                    $"положите их в папку:\n{targetFolder}\nи нажмите «Обновить список»."),
+                LocalizationService.Pick("Model download blocked by network", "Загрузка модели заблокирована сетью"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
@@ -658,15 +1115,15 @@ public partial class SettingsWindow : Window
         _downloadCts?.Cancel();
     }
 
-    private void OnDeleteOfflineModelClick(object sender, RoutedEventArgs e)
+    private void OnDeleteSelectedOfflineModelClick(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: string modelId })
+        string modelId = _selectedOfflineModelId;
+        if (!string.IsNullOrWhiteSpace(modelId) && _modelCatalogService.DeleteModelPackage(modelId))
         {
-            if (_modelCatalogService.DeleteModelPackage(modelId))
-            {
-                FooterStatusText.Text = LocalizationService.Pick($"Model '{modelId}' deleted from disk.", $"Модель '{modelId}' удалена с диска.");
-                RefreshOfflineModelsUi();
-            }
+            FooterStatusText.Text = LocalizationService.Pick(
+                $"Model '{modelId}' deleted from disk.",
+                $"Модель '{modelId}' удалена с диска.");
+            RefreshOfflineModelsUi();
         }
     }
 
@@ -743,7 +1200,9 @@ public partial class SettingsWindow : Window
         }
 
         if (SettingsMouseBatteryDetailText is not null)
-            SettingsMouseBatteryDetailText.Text = LocalizationService.Pick("Checking mouse connection...", "Проверка подключения мыши...");
+            SettingsMouseBatteryDetailText.Text = LocalizationService.Pick(
+                "Checking wireless mouse connection...",
+                "Проверка подключения мыши...");
 
         _ = Task.Run(() =>
         {
@@ -774,8 +1233,12 @@ public partial class SettingsWindow : Window
         {
             SettingsMouseBatteryText.Text = "--%";
             SettingsMouseBatteryDetailText.Text = enabled
-                ? LocalizationService.Pick("Mouse not detected (check Bluetooth / 2.4 GHz / USB)", "Мышь не обнаружена (проверьте Bluetooth / 2.4 ГГц / USB)")
-                : LocalizationService.Pick("Mouse battery monitoring is off", "Мониторинг заряда мыши выключен");
+                ? LocalizationService.Pick(
+                    "No mouse detected (check Bluetooth / 2.4 GHz / USB)",
+                    "Мышь не обнаружена (проверьте Bluetooth / 2.4 ГГц / USB)")
+                : LocalizationService.Pick(
+                    "Mouse battery monitoring is off",
+                    "Мониторинг заряда мыши выключен");
             SettingsMouseBolt.SetResourceReference(System.Windows.Shapes.Path.FillProperty, "ThemeAccentBrush");
             UpdateSettingsMouseBoltBlink(false);
             return;
@@ -789,7 +1252,7 @@ public partial class SettingsWindow : Window
             ? LocalizationService.Pick("Wireless mouse", "Беспроводная мышь")
             : snap.DeviceName;
         SettingsMouseBatteryDetailText.Text = (snap.IsCharging && snap.Percent <= 0)
-            ? $"{name} • {snap.ConnectionLabel} ({LocalizationService.Pick("charging", "зарядка")})"
+            ? $"{name} • {snap.ConnectionLabel} {LocalizationService.Pick("(charging)", "(зарядка)")}"
             : $"{name} • {snap.ConnectionLabel}{(snap.IsCharging ? LocalizationService.Pick(" • Charging", " • Заряжается") : string.Empty)}";
 
         bool isLow = !snap.IsCharging && snap.Percent <= threshold;
@@ -925,6 +1388,14 @@ public partial class SettingsWindow : Window
             Enum.TryParse<AppLanguage>(langItem.Tag?.ToString(), out var lang))
         {
             LocalizationService.ApplyLanguage(lang);
+
+            if (AppSettings.IsBuiltInDefaultPromptSet(_customPrompts))
+            {
+                _customPrompts.Clear();
+                foreach (var chip in AppSettings.GetDefaultCustomAiPrompts(lang))
+                    _customPrompts.Add(chip);
+            }
+
             RefreshDynamicLocalizedTexts();
             FooterStatusText.Text = LocalizationService.Pick(
                 "Language preview: English (click \"Save settings\" to keep)",
@@ -951,7 +1422,7 @@ public partial class SettingsWindow : Window
             _suppressHexSync = false;
             UpdateWaveColorPreviews();
 
-            string themeName = ThemeService.GetLocalizedDisplayName(style);
+            string themeName = LocalizationService.Get($"Loc_Theme_{style}");
             FooterStatusText.Text = LocalizationService.Pick(
                 $"Theme preview: {themeName}",
                 $"Предпросмотр темы: {themeName}");
@@ -989,7 +1460,7 @@ public partial class SettingsWindow : Window
         RefreshDynamicLocalizedTexts();
         FooterStatusText.Text = LocalizationService.Pick(
             "Settings reset to defaults (click \"Save settings\").",
-            "Параметры сброшены к значениям по умолчанию (нажмите «Сохранить»).");
+            "Параметры сброшены к значениям по умолчанию (нажмите «Сохранить настройки»).");
     }
 
     private void OnSaveClick(object sender, RoutedEventArgs e)
@@ -1045,8 +1516,7 @@ public partial class SettingsWindow : Window
         }
         s.EnableIslandNotifications = EnableIslandNotificationsCheck.IsChecked == true;
         s.SuppressWindowsToastWhenIslandActive = SuppressWindowsToastCheck.IsChecked == true;
-        if (double.TryParse(NotifAutoDismissBox.Text, System.Globalization.NumberStyles.Any,
-                CultureInfo.InvariantCulture, out double dismissSec))
+        if (TryParseDoubleFlexible(NotifAutoDismissBox.Text, out double dismissSec))
             s.NotificationAutoDismissSeconds = Math.Clamp(dismissSec, 2.0, 30.0);
 
         if (NotificationSoundCombo.SelectedItem is ComboBoxItem soundItem &&
@@ -1078,6 +1548,12 @@ public partial class SettingsWindow : Window
             s.TranslationMode = mode;
         }
 
+        if (OcrModeCombo.SelectedItem is ComboBoxItem ocrModeItem &&
+            Enum.TryParse<OcrEngineMode>(ocrModeItem.Tag?.ToString(), out var ocrMode))
+        {
+            s.OcrMode = ocrMode;
+        }
+
         if (OnlineProviderCombo.SelectedItem is ComboBoxItem provItem &&
             Enum.TryParse<OnlineTranslationProvider>(provItem.Tag?.ToString(), out var provider))
         {
@@ -1093,6 +1569,7 @@ public partial class SettingsWindow : Window
         s.AutoDetectSourceLanguage = AutoDetectLangCheck.IsChecked == true;
         s.SelectedOfflineModelId = _selectedOfflineModelId;
         s.EnableLocalAiAssistant = EnableLocalAiCheck.IsChecked == true;
+        s.SelectedAiModelId = GetSelectedAiModelId();
         if (AiBackendCombo.SelectedItem is ComboBoxItem backendItem &&
             Enum.TryParse<AiComputeBackend>(backendItem.Tag?.ToString(), out var backend))
         {
@@ -1117,6 +1594,9 @@ public partial class SettingsWindow : Window
         {
             s.AiFeedAction = aiAction;
         }
+        s.CustomAiPrompts = AppSettings.IsBuiltInDefaultPromptSet(_customPrompts)
+            ? AppSettings.GetDefaultCustomAiPrompts(s.UiLanguage)
+            : _customPrompts.ToList();
 
         var trimmedHotkey = HotkeyBox.Text.Trim();
         if (!string.IsNullOrWhiteSpace(trimmedHotkey))
@@ -1157,10 +1637,10 @@ public partial class SettingsWindow : Window
         if (int.TryParse(TrailLengthBox.Text, out int trailMs))
             s.CursorTrailLengthMs = Math.Clamp(trailMs, 80, 1200);
 
-        if (double.TryParse(TrailThicknessBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double trailThick))
+        if (TryParseDoubleFlexible(TrailThicknessBox.Text, out double trailThick))
             s.CursorTrailThickness = Math.Clamp(trailThick, 1.0, 10.0);
 
-        if (double.TryParse(TrailOpacityBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double trailOp))
+        if (TryParseDoubleFlexible(TrailOpacityBox.Text, out double trailOp))
             s.CursorTrailOpacity = Math.Clamp(trailOp, 0.1, 1.0);
 
         if (int.TryParse(PopupAutoHideBox.Text, out int popupSec))
@@ -1195,10 +1675,10 @@ public partial class SettingsWindow : Window
         if (int.TryParse(WaveBarCountBox.Text, out int barCount))
             s.WaveBarCount = Math.Clamp(barCount, 6, 32);
 
-        if (double.TryParse(WaveSensitivityBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double sens))
+        if (TryParseDoubleFlexible(WaveSensitivityBox.Text, out double sens))
             s.WaveSensitivity = Math.Clamp(sens, 0.3, 5.0);
 
-        if (double.TryParse(WaveSmoothingBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double smooth))
+        if (TryParseDoubleFlexible(WaveSmoothingBox.Text, out double smooth))
             s.WaveSmoothing = Math.Clamp(smooth, 0.05, 0.92);
 
         if (TryNormalizeHexColor(StaticColorHexBox.Text, out string staticHex))
@@ -1207,7 +1687,7 @@ public partial class SettingsWindow : Window
         {
             FooterStatusText.Text = LocalizationService.Pick(
                 "Invalid HEX color in Primary wave color (example: #FF00F5D4).",
-                "Некорректный HEX цвет в поле «Основной неоновый цвет» (пример: #FF00F5D4).");
+                "Некорректный HEX цвет в поле «Основной цвет волн» (пример: #FF00F5D4).");
             return;
         }
 
@@ -1221,12 +1701,24 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        _isSaved = true;
         _settingsService.Save(s);
         CloseWithAnimation();
     }
 
+    private static bool TryParseDoubleFlexible(string? text, out double value)
+    {
+        value = 0;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        string normalized = text.Trim().Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    }
+
     private void CloseWithAnimation()
     {
+        if (_isClosing) return;
+        _isClosing = true;
         var dur = TimeSpan.FromMilliseconds(170);
         var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
         var fade = new DoubleAnimation(1.0, 0.0, dur) { EasingFunction = ease };
@@ -1257,7 +1749,7 @@ public partial class SettingsWindow : Window
 
     private void OnCancelClick(object sender, RoutedEventArgs e)
     {
-        LocalizationService.ApplyLanguage(_settingsService.Current.UiLanguage);
+        LocalizationService.ApplyLanguage(_initialLanguage);
         ThemeService.ApplyTheme(_settingsService.Current.ThemeStyle);
         CloseWithAnimation();
     }

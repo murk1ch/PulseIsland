@@ -1,51 +1,66 @@
-# GOAL.md — Vision, Architecture & Subsystem Status for PulseIsland
+# GOAL.md — Vision, Architecture & Subsystem Status for PulseIsland (v2.0.0)
 
 ## Core Vision
-Build a lightweight, 100% portable ("Zero-Install" — all data stored strictly inside the app's own folder with zero clutter in `%AppData%`), visually polished Dynamic Island desktop utility for Windows 10/11 — **PulseIsland** — uniting music playback & live visualization, system notifications, instant OCR/offline translation, a local AI assistant, and hardware telemetry without bloated drivers or leaking user data to external servers.
+Build a lightweight, 100% portable ("Zero-Install" — all data stored strictly inside `<portable-root>` with zero clutter in `%AppData%`, `%LocalAppData%`, or system `%Temp%`), visually polished Dynamic Island desktop utility for Windows 10/11 — **PulseIsland** — uniting live media playback & 60 FPS audio visualization, live microphone & audio output controls, system notifications, neural screen OCR & offline translation, a multimodal local AI assistant with offline voice dictation, and wireless hardware telemetry without bloated drivers or leaking user data to external servers.
 
 ---
 
-## Current Subsystem Status
+## Current Subsystem Status (v2.0.0)
 
-### 1. Dynamic Island UI & Styling (`UI/IslandWindow.xaml(.cs)`, `ThemeService.cs`, `DwmBackdropService.cs`, `LocalizationService.cs`)
+### 1. Dynamic Island UI, Onboarding & Live Bilingual UI (`UI/IslandWindow.xaml(.cs)`, `UI/WelcomeOnboardingWindow.xaml(.cs)`, `ThemeService.cs`, `DwmBackdropService.cs`, `LocalizationService.cs`)
 - **Completed:**
   - Three states: `Hidden` (tucked into the top edge with hover trigger), `Compact` (top-center pill), `Expanded` (full dashboard with dynamic height calculation).
-  - Real Windows DWM acrylic backdrop blur + 7 built-in themes + custom corner radius and opacity.
-  - Smooth fluid animations (accordion transition between notifications and translator history, Blur-in / Scale materialization).
-  - Full live bilingual localization (**English default**, instant switch to Russian in Settings).
+  - Real Windows DWM acrylic backdrop blur + 7 built-in themes + custom corner radius and opacity + responsive EN/RU `Grid`/`WrapPanel` headers and toolbars.
+  - Full live bilingual localization (**English default**, instant live switch to Russian via `{DynamicResource Loc_*}` + `LocalizationService.LanguageChanged` with 100% EN/RU dictionary key parity).
+  - 3-step first-launch onboarding wizard (`WelcomeOnboardingWindow`: live EN/RU selector, 7 themes live preview, DWM blur toggle, `Alt+Q` + Vision + Voice guide, active modules checklist), also reopenable anytime via the **Guide** button in Settings.
 
-### 2. Music & 60 FPS Visualizer (`Audio/`, `Media/`)
+### 2. Live Activities in the Island (`Audio/AudioEndpointMonitorService.cs`, `Audio/WasapiComInterop.cs`, `UI/IslandWindow.xaml(.cs)`, `ViewModels/IslandViewModel.cs`)
 - **Completed:**
-  - Native COM WASAPI loopback without NAudio + `AudioSessionMusicFilter` (reacts strictly to music playback, ignores voice calls/Discord).
-  - Radix-2 FFT with logarithmic band mapping and attack/release smoothing (`SmoothCurve`, `Bars`, etc.).
-  - Windows SMTC integration (`SmtcMediaService`): album art, dominant accent glow, track seek/progress bar, and playback buttons without triggering the Windows system OSD.
+  - Active microphone capture indicator pill in both Compact and Expanded island states showing which application is actively capturing audio (e.g., Discord, OBS, Teams) + 1-click Mute toggle.
+  - 1-click Default Audio Output Switcher via COM `IPolicyConfig` (`SetDefaultEndpoint`) with real endpoint names read via `IPropertyStore` / `PropVariant`.
+  - Intentionally clean design: **no** Timer / Pomodoro / Stopwatch clutter in the island.
 
-### 3. In-Island System Notifications (`IslandNotificationService`, `WindowsNotificationListener`, `WindowsToastSuppressor`, `CornerPopupInterceptor`)
+### 3. Music & 60 FPS Visualizer (`Audio/`, `Media/`)
+- **Completed:**
+  - Native COM WASAPI loopback without NAudio + `AudioSessionMusicFilter` (reacts strictly to active music playback, ignores voice calls/Discord).
+  - Radix-2 FFT (`FftSpectrumProcessor`) with logarithmic band mapping and attack/release smoothing (`SmoothCurve`, `Bars`).
+  - Windows SMTC integration (`SmtcMediaService`): album art, dominant accent glow, track seek/progress bar, and playback controls without triggering the Windows system OSD.
+
+### 4. In-Island System Notifications (`IslandNotificationService`, `WindowsNotificationListener`, `WindowsToastSuppressor`, `CornerPopupInterceptor`, `NotificationActivator`, `NotificationSoundService`)
 - **Completed:**
   - Event-driven Windows notification listener (WNF + `UserNotificationListener`), Telegram media tag parsing, and click-to-open chat activation for Telegram/Discord.
-  - Suppression of native Windows bottom-right toasts and interception of custom corner popups.
+  - Suppression of native Windows bottom-right toasts and interception of leftover corner popups.
   - Zero-dependency in-memory WAV chime synthesizer (`NotificationSoundService`).
 
-### 4. Screen Translator (`Translation/`, `LassoOverlayWindow`, `TranslationPopupWindow`)
+### 5. Neural Screen OCR & Translator (`Translation/`, `LassoOverlayWindow`, `TranslationPopupWindow`)
 - **Completed:**
-  - Freehand lasso screen selection with a 60 FPS fading cursor trail + hotkey clipboard translation.
-  - Local `Windows.Media.Ocr` + selectable backend: online (Google / MyMemory / DeepL with Windows DPAPI key encryption) or fully offline ONNX MarianMT (`OrtNativeRuntime` C-API + pure C# `SentencePieceMarianTokenizer`).
-  - Resumable Hugging Face model downloads (`Range` requests) directly from Settings.
+  - `Alt+Q` dual-contrast Pulse Orb cursor with shrinkable rectangle selection (`LassoGeometryHelper.ComputeRectangleBox`): **LMB drag** to translate, **RMB drag / Shift+LMB** to ask Vision AI about any screen region.
+  - Three OCR modes (`OcrEngineMode`: `AutoSmart`, `VisionLlmAlways`, `WindowsOcrOnly`) combining **PP-OCRv5 Mobile ONNX** (`PaddleOcrOnnxService` + `OcrImagePreprocessor` for cursive/handwriting, decorative fonts, `°C`, math formulas, tiny UI text, and dark/gradient backgrounds), `Windows.Media.Ocr`, and optional Vision VLM fallback.
+  - Three translation modes (`TranslationEngineMode`): `OnlineWindowsOcr` (Hybrid: Google / MyMemory / DeepL with DPAPI key encryption + local fallback), `OfflineOnnx` (MarianMT via `OrtNativeRuntime` C-API + pure C# `SentencePieceMarianTokenizer`), and `OfflineLocalLlm` (local LLM translation).
+  - Floating `TranslationPopupWindow` with 1-click `⇄` language direction swap, `Ask AI` handoff, and `Copy original`, plus live search inside Expanded Island translation history (`WS_EX_NOACTIVATE` focus toggling).
 
-### 5. Local AI Assistant (`LocalLlmService`, `LocalLlmCatalogService`, `AiAssistantPopupWindow`, `WeatherService`)
+### 6. Local AI Assistant, Vision VLMs & Offline Voice (`LocalLlmService`, `LocalLlmCatalogService`, `AiResponseFormatter`, `WhisperVoiceService`, `AiAssistantPopupWindow`, `WeatherService`)
 - **Completed:**
-  - Fully local inference using `Qwen 2.5 3B Instruct` (`Q4_K_M` GGUF) via portable `llama-server.exe` with automatic Vulkan GPU → CPU selection.
-  - One-click resumable download of both the model and runtime in Settings.
-  - Dedicated hotkey ("feed to AI"), text summarization, translation, live weather (`wttr.in`), floating `AiAssistantPopupWindow` with custom dark scrollbar, and priority "AI thinking" status indicator on the compact island.
+  - Multi-model GGUF catalog via portable `llama-server.exe` on `127.0.0.1` (**Qwen 2.5 3B/7B**, **Qwen 3 4B**, **Gemma 2 9B**, and Vision VLMs **Qwen 2.5 VL 3B & 7B** with `--mmproj` and `-c 8192`), with automatic sticky Vulkan GPU → CPU fallback on crash and **zero automatic downloads**.
+  - Multi-turn conversation memory (`AiChatTurn`, `StreamChatHistoryAsync`, `Chat: N` badge + `New chat`), rich Markdown + LaTeX Unicode + Markdown Table rendering (`AiResponseFormatter`), `Table → MD/CSV` screenshot export, `Ctrl+V` screenshot paste, and up to 8 editable custom quick-prompt chips (`CustomAiPromptChip`, bilingual built-in defaults).
+  - Offline voice dictation (`WhisperVoiceService`): Win32 `waveIn` 16 kHz mono recorder + portable `whisper.cpp` (`ggml-base.bin` in `models\_whisper\`).
+  - Live key-free weather (`wttr.in`) cached in `cache\weather_cache.json`.
 
-### 6. Smart Island Features & Mouse Battery (`SystemMonitorService`, `MouseBatteryService`, `SmartClipboardWindow`)
+### 7. Smart Clipboard Image History, Drop Shelf & Wireless Mouse Battery (`SmartClipboardService`, `SmartClipboardWindow`, `SystemMonitorService`, `MouseBatteryService`)
 - **Completed:**
-  - PC telemetry (CPU, RAM, network speed, clock/date, PC battery, Uptime), File Drop Shelf, and searchable/pinnable Smart Clipboard.
-  - Collapsible wireless mouse battery settings panel with live charge status: Bluetooth (`DEVPKEY_Device_ContainerId` + `DEVPKEY_Device_BatteryPlusCharging`) and 2.4 GHz (HID `0x84`/`0x85`, Logitech HID++, Razer HyperSpeed, Beken `VID_1D57&PID_FA60` Interrupt-IN + wired charging `PID_FA61` via `WM_DEVICECHANGE` and `CancelIoEx`), vector lightning icon (pulsing while charging), and configurable low-battery sound alert.
+  - Searchable/pinnable Smart Clipboard text history plus up to **8 recent screenshots in RAM** (pixel-hash deduplication) with 1-click `Ask AI` (Vision) and `Copy`.
+  - Expanded Island File Drop Shelf with instant image quick actions (`Ask AI`, convert to `PNG`, compress to `JPG 82%`).
+  - PC telemetry badges (CPU, RAM, network speed, clock/date, PC battery, Uptime) and non-blocking async Settings UI (`OnWindowLoaded`).
+  - Wireless mouse battery monitoring across Bluetooth LE/Classic (`DEVPKEY_Device_ContainerId`), HID Power/Battery Pages `0x84`/`0x85`, Beken/Rongyuan `0x1D57` (Attack Shark X3/X6/X11/R1 + wired charging `PID_FA61`), Logitech HID++ 2.0 (with `0x8F`/`0xFF` error guard), Razer HyperSpeed, **Compx / VXE / ATK / VGN / Darmoshark / Zaopin** (`0x3554`/`0x25A7`/`0x373B`), and **Lamzu / Pulsar / Nordic 4K/8K** (`0x3710`/`0x3367`/`0x373E`) — all using heap-allocated Win32 `OVERLAPPED` + `CancelIoEx`.
+
+### 8. Automated Verification (`tests/PulseIsland.Tests/PulseIslandTests.cs`)
+- **Completed:**
+  - **36 portable unit & integration tests** passing cleanly (`0 failed`) both locally and on fresh CI clones with zero hardcoded drives or machine-specific paths.
 
 ---
 
 ## Future Roadmap Ideas
-1. **Expand 2.4 GHz Wireless Mouse Support:** Add new vendor/chipset protocols (e.g., Nordic / Compx / VXE / Lamzu / Pulsar) in `MouseBatteryService.cs`, preserving safe `OVERLAPPED` + `CancelIoEx` I/O and covering packet parsers with unit tests.
-2. **Portable Distribution & Automated Testing:** Maintain 100% pass rate across `tests\PulseIsland.Tests`, verify zero writes outside the portable root (`file-system-audit`), and keep `dist\` publishing clean.
-3. **UX Polish:** Ensure any new windows/popups support all 7 themes, live EN/RU localization, DWM blur, window dragging (`DragMove`), custom scrollbars, and crisp rendering on multi-monitor mixed-DPI setups.
+1. **Additional Hardware & Peripheral Support:** Extend `MouseBatteryService.cs` with community-contributed 2.4 GHz HID protocol parsers (e.g., Corsair, SteelSeries, Endgame Gear, Keychron) while keeping heap-allocated `OVERLAPPED` + `CancelIoEx` safety and unit test coverage.
+2. **Additional UI Languages:** Build on `LocalizationService`'s key-parity architecture and automated parity test to support additional community translations beyond English and Russian.
+3. **Offline Model Ecosystem & Performance:** Keep `LocalLlmCatalogService`, `PaddleOcrOnnxService`, and `WhisperVoiceService` updated with newer compact GGUF / ONNX checkpoints while preserving strict zero-auto-download and portable-isolation guarantees.
+4. **Multi-Monitor & Mixed-DPI UX Polish:** Continue ensuring every window/popup respects all 7 themes, DWM blur, custom scrollbars, `DwmBackdropService.GetParentSafe`, responsive EN/RU layouts, and crisp Per-Monitor V2 DPI rendering.

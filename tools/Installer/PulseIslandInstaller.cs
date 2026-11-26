@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -32,11 +33,19 @@ namespace PulseIslandInstaller
         private readonly Button _installBtn;
         private readonly Button _browseBtn;
 
+        private static readonly bool IsRu =
+            CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("ru", StringComparison.OrdinalIgnoreCase);
+
+        private static string T(string en, string ru)
+        {
+            return IsRu ? ru : en;
+        }
+
         private const string DotNet8DesktopUrl = "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe";
 
         public InstallerForm()
         {
-            Text = "Установка PulseIsland";
+            Text = T("PulseIsland Setup", "Установка PulseIsland");
             ClientSize = new Size(490, 295);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -62,7 +71,9 @@ namespace PulseIslandInstaller
 
             var subtitle = new Label
             {
-                Text = "Динамический островок: музыкальный визуализатор и экранный переводчик",
+                Text = T(
+                    "Portable Dynamic Island: music visualizer, screen translator & local AI",
+                    "Динамический островок: музыкальный визуализатор, переводчик и локальный ИИ"),
                 ForeColor = Color.FromArgb(148, 163, 184),
                 Location = new Point(26, 52),
                 Size = new Size(440, 22)
@@ -70,7 +81,7 @@ namespace PulseIslandInstaller
 
             var dirLabel = new Label
             {
-                Text = "Папка установки:",
+                Text = T("Install folder (portable root):", "Папка установки (portable):"),
                 ForeColor = Color.FromArgb(203, 213, 225),
                 Location = new Point(26, 88),
                 AutoSize = true
@@ -92,7 +103,7 @@ namespace PulseIslandInstaller
 
             _browseBtn = new Button
             {
-                Text = "Обзор...",
+                Text = T("Browse...", "Обзор..."),
                 Location = new Point(378, 110),
                 Size = new Size(86, 28),
                 FlatStyle = FlatStyle.Flat,
@@ -104,7 +115,7 @@ namespace PulseIslandInstaller
 
             _shortcutCheck = new CheckBox
             {
-                Text = "Создать ярлык на Рабочем столе",
+                Text = T("Create Desktop shortcut", "Создать ярлык на Рабочем столе"),
                 Checked = true,
                 Location = new Point(26, 150),
                 AutoSize = true,
@@ -113,7 +124,7 @@ namespace PulseIslandInstaller
 
             _launchCheck = new CheckBox
             {
-                Text = "Запустить PulseIsland сразу после установки",
+                Text = T("Launch PulseIsland after installation", "Запустить PulseIsland сразу после установки"),
                 Checked = true,
                 Location = new Point(26, 176),
                 AutoSize = true,
@@ -129,7 +140,7 @@ namespace PulseIslandInstaller
 
             _statusLabel = new Label
             {
-                Text = "Готово к установке.",
+                Text = T("Ready to install.", "Готово к установке."),
                 ForeColor = Color.FromArgb(125, 211, 252),
                 Location = new Point(26, 234),
                 Size = new Size(310, 40)
@@ -137,7 +148,7 @@ namespace PulseIslandInstaller
 
             _installBtn = new Button
             {
-                Text = "Установить",
+                Text = T("Install", "Установить"),
                 Location = new Point(344, 242),
                 Size = new Size(120, 34),
                 FlatStyle = FlatStyle.Flat,
@@ -159,7 +170,7 @@ namespace PulseIslandInstaller
         {
             using (var dlg = new FolderBrowserDialog())
             {
-                dlg.Description = "Выберите папку для установки PulseIsland";
+                dlg.Description = T("Select folder to install PulseIsland", "Выберите папку для установки PulseIsland");
                 dlg.SelectedPath = Directory.Exists(_pathBox.Text)
                     ? _pathBox.Text
                     : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -175,7 +186,7 @@ namespace PulseIslandInstaller
             string targetDir = (_pathBox.Text ?? string.Empty).Trim();
             if (string.IsNullOrEmpty(targetDir))
             {
-                MessageBox.Show(this, "Укажите папку установки.", "PulseIsland", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, T("Please specify an install folder.", "Укажите папку установки."), "PulseIsland", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -183,11 +194,12 @@ namespace PulseIslandInstaller
             _browseBtn.Enabled = false;
             _pathBox.Enabled = false;
 
+            bool createShortcut = _shortcutCheck.Checked;
             try
             {
-                await Task.Run(() => RunInstallation(targetDir));
+                await Task.Run(() => RunInstallation(targetDir, createShortcut));
 
-                SetStatus("Установка успешно завершена!", 100);
+                SetStatus(T("Installation completed successfully!", "Установка успешно завершена!"), 100);
                 string exePath = Path.Combine(targetDir, "PulseIsland.exe");
 
                 if (_launchCheck.Checked && File.Exists(exePath))
@@ -201,24 +213,28 @@ namespace PulseIslandInstaller
                 }
                 else
                 {
-                    MessageBox.Show(this, "PulseIsland успешно установлен в:\n" + targetDir, "PulseIsland", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(this,
+                        T("PulseIsland was successfully installed to:\n", "PulseIsland успешно установлен в:\n") + targetDir,
+                        "PulseIsland", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
 
                 Close();
             }
             catch (Exception ex)
             {
-                SetStatus("Ошибка установки.", 0);
-                MessageBox.Show(this, "Не удалось завершить установку:\n" + ex.Message, "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                SetStatus(T("Installation failed.", "Ошибка установки."), 0);
+                MessageBox.Show(this,
+                    T("Could not complete installation:\n", "Не удалось завершить установку:\n") + ex.Message,
+                    T("Error", "Ошибка"), MessageBoxButtons.OK, MessageBoxIcon.Error);
                 _installBtn.Enabled = true;
                 _browseBtn.Enabled = true;
                 _pathBox.Enabled = true;
             }
         }
 
-        private void RunInstallation(string targetDir)
+        private void RunInstallation(string targetDir, bool createShortcut)
         {
-            SetStatus("Закрытие запущенных копий PulseIsland...", 10);
+            SetStatus(T("Closing running PulseIsland instances...", "Закрытие запущенных копий PulseIsland..."), 10);
             foreach (var proc in Process.GetProcessesByName("PulseIsland"))
             {
                 try { proc.Kill(); proc.WaitForExit(3000); } catch { }
@@ -226,14 +242,14 @@ namespace PulseIslandInstaller
 
             if (!IsDotNet8DesktopInstalled())
             {
-                SetStatus("Загрузка .NET 8 Desktop Runtime...", 25);
+                SetStatus(T("Downloading .NET 8 Desktop Runtime...", "Загрузка .NET 8 Desktop Runtime..."), 25);
                 string tempSetup = Path.Combine(Path.GetTempPath(), "PulseIsland-dotnet8-desktop.exe");
                 using (var client = new WebClient())
                 {
                     client.DownloadFile(DotNet8DesktopUrl, tempSetup);
                 }
 
-                SetStatus("Установка .NET 8 Desktop Runtime...", 50);
+                SetStatus(T("Installing .NET 8 Desktop Runtime...", "Установка .NET 8 Desktop Runtime..."), 50);
                 var psi = new ProcessStartInfo
                 {
                     FileName = tempSetup,
@@ -248,7 +264,7 @@ namespace PulseIslandInstaller
                 try { if (File.Exists(tempSetup)) File.Delete(tempSetup); } catch { }
             }
 
-            SetStatus("Распаковка файлов PulseIsland...", 72);
+            SetStatus(T("Extracting PulseIsland files...", "Распаковка файлов PulseIsland..."), 72);
             Directory.CreateDirectory(targetDir);
 
             string tempZip = Path.Combine(Path.GetTempPath(), "PulseIsland-payload.zip");
@@ -257,7 +273,7 @@ namespace PulseIslandInstaller
                 using (Stream res = Assembly.GetExecutingAssembly().GetManifestResourceStream("PulseIsland.zip"))
                 {
                     if (res == null)
-                        throw new InvalidOperationException("Встроенный архив приложения не найден.");
+                        throw new InvalidOperationException(T("Embedded application archive not found.", "Встроенный архив приложения не найден."));
                     using (var fs = File.Create(tempZip))
                     {
                         res.CopyTo(fs);
@@ -283,9 +299,9 @@ namespace PulseIslandInstaller
                 try { if (File.Exists(tempZip)) File.Delete(tempZip); } catch { }
             }
 
-            if (_shortcutCheck.Checked)
+            if (createShortcut)
             {
-                SetStatus("Создание ярлыка на Рабочем столе...", 90);
+                SetStatus(T("Creating Desktop shortcut...", "Создание ярлыка на Рабочем столе..."), 90);
                 CreateDesktopShortcut(Path.Combine(targetDir, "PulseIsland.exe"), targetDir);
             }
         }

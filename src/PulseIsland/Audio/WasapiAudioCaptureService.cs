@@ -12,6 +12,7 @@ namespace PulseIsland.Audio;
 public sealed class WasapiAudioCaptureService : IDisposable
 {
     private readonly object _bufferLock = new();
+    private readonly object _lifecycleLock = new();
     private readonly float[] _ringBuffer;
     private int _writeIndex;
     private volatile int _sampleRate = 48000;
@@ -22,6 +23,7 @@ public sealed class WasapiAudioCaptureService : IDisposable
     private string? _targetDeviceId;
     private volatile bool _isRunning;
     private volatile bool _disposed;
+    private int _restartScheduled;
 
     private IMMDeviceEnumerator? _enumerator;
     private DeviceNotificationClient? _notificationClient;
@@ -36,68 +38,82 @@ public sealed class WasapiAudioCaptureService : IDisposable
 
     public void Start(string? deviceId = null)
     {
-        if (_disposed) return;
-
-        Stop();
-        _targetDeviceId = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId;
-
-        var endpointsToCapture = new List<string?>();
-        try
+        lock (_lifecycleLock)
         {
-            _enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
-            _notificationClient = new DeviceNotificationClient(this);
-            _enumerator.RegisterEndpointNotificationCallback(_notificationClient);
+            if (_disposed) return;
 
-            if (_targetDeviceId is not null)
+            StopLocked();
+            _targetDeviceId = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId;
+
+            var endpointsToCapture = new List<string?>();
+            try
             {
-                endpointsToCapture.Add(_targetDeviceId);
-            }
-            else
-            {
-                // Capture from default endpoint + any other active render endpoints so music is captured
-                // regardless of whether the player outputs to Speakers, Headphones, or Monitor HDMI.
-                var activeDevices = GetRenderDevices();
-                foreach (var dev in activeDevices)
+                _enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+                _notificationClient = new DeviceNotificationClient(this);
+                _enumerator.RegisterEndpointNotificationCallback(_notificationClient);
+
+                if (_targetDeviceId is not null)
                 {
-                    if (!endpointsToCapture.Contains(dev.Id))
-                        endpointsToCapture.Add(dev.Id);
+                    endpointsToCapture.Add(_targetDeviceId);
                 }
+                else
+                {
+                    // Capture from default endpoint + any other active render endpoints so music is captured
+                    // regardless of whether the player outputs to Speakers, Headphones, or Monitor HDMI.
+                    var activeDevices = GetRenderDevices();
+                    foreach (var dev in activeDevices)
+                    {
+                        if (!endpointsToCapture.Contains(dev.Id))
+                            endpointsToCapture.Add(dev.Id);
+                    }
 
-                if (endpointsToCapture.Count == 0)
-                    endpointsToCapture.Add(null);
+                    if (endpointsToCapture.Count == 0)
+                        endpointsToCapture.Add(null);
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            LogService.Warn($"Could not initialize audio endpoint enumerator: {ex.Message}");
-            if (endpointsToCapture.Count == 0)
-                endpointsToCapture.Add(_targetDeviceId);
-        }
-
-        _cts = new CancellationTokenSource();
-        _isRunning = true;
-
-        var token = _cts.Token;
-        int idx = 0;
-        foreach (var epId in endpointsToCapture)
-        {
-            string? capturedEndpointId = epId;
-            var thread = new Thread(() => CaptureLoop(capturedEndpointId, token))
+            catch (Exception ex)
             {
-                IsBackground = true,
-                Name = $"PulseIsland.WasapiLoopback.{idx++}",
-                Priority = ThreadPriority.AboveNormal
-            };
-            _captureThreads.Add(thread);
-            thread.Start();
+                LogService.Warn($"Could not initialize audio endpoint enumerator: {ex.Message}");
+                if (endpointsToCapture.Count == 0)
+                    endpointsToCapture.Add(_targetDeviceId);
+            }
+
+            _cts = new CancellationTokenSource();
+            _isRunning = true;
+
+            var token = _cts.Token;
+            int idx = 0;
+            foreach (var epId in endpointsToCapture)
+            {
+                string? capturedEndpointId = epId;
+                var thread = new Thread(() => CaptureLoop(capturedEndpointId, token))
+                {
+                    IsBackground = true,
+                    Name = $"PulseIsland.WasapiLoopback.{idx++}",
+                    Priority = ThreadPriority.AboveNormal
+                };
+                _captureThreads.Add(thread);
+                thread.Start();
+            }
         }
     }
 
     public void Stop()
     {
+        lock (_lifecycleLock)
+        {
+            StopLocked();
+        }
+    }
+
+    private void StopLocked()
+    {
         _isRunning = false;
         _cts?.Cancel();
-        foreach (var t in _captureThreads)
+        var threadsSnapshot = _captureThreads.ToList();
+        _captureThreads.Clear();
+
+        foreach (var t in threadsSnapshot)
         {
             try
             {
@@ -108,15 +124,17 @@ public sealed class WasapiAudioCaptureService : IDisposable
                 // Ignore join timeout on shutdown
             }
         }
-        _captureThreads.Clear();
 
         _cts?.Dispose();
         _cts = null;
 
-        if (_enumerator is not null && _notificationClient is not null)
+        if (_enumerator is not null)
         {
-            try { _enumerator.UnregisterEndpointNotificationCallback(_notificationClient); } catch { }
-            Marshal.ReleaseComObject(_enumerator);
+            if (_notificationClient is not null)
+            {
+                try { _enumerator.UnregisterEndpointNotificationCallback(_notificationClient); } catch { }
+            }
+            try { Marshal.ReleaseComObject(_enumerator); } catch { }
             _enumerator = null;
             _notificationClient = null;
         }
@@ -139,7 +157,19 @@ public sealed class WasapiAudioCaptureService : IDisposable
 
     public static IReadOnlyList<(string Id, string Name)> GetRenderDevices()
     {
-        var list = new List<(string Id, string Name)>();
+        var detailed = GetRenderDevicesDetailed();
+        var list = new List<(string Id, string Name)>(detailed.Count);
+        foreach (var d in detailed)
+        {
+            string label = d.IsDefault ? $"{d.FullName} [{LocalizationService.Pick("Default", "По умолчанию")}]" : d.FullName;
+            list.Add((d.Id, label));
+        }
+        return list;
+    }
+
+    public static IReadOnlyList<(string Id, string FullName, string ShortName, bool IsDefault)> GetRenderDevicesDetailed()
+    {
+        var list = new List<(string Id, string FullName, string ShortName, bool IsDefault)>();
         try
         {
             var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
@@ -148,26 +178,37 @@ public sealed class WasapiAudioCaptureService : IDisposable
                 string? defaultId = null;
                 if (enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, ERole.eMultimedia, out var defDev) == 0 && defDev is not null)
                 {
-                    defDev.GetId(out defaultId);
-                    Marshal.ReleaseComObject(defDev);
+                    try { defDev.GetId(out defaultId); }
+                    finally { Marshal.ReleaseComObject(defDev); }
                 }
 
-                if (enumerator.EnumAudioEndpoints(EDataFlow.eRender, 0x00000001 /* ACTIVE */, out var collection) == 0)
+                if (enumerator.EnumAudioEndpoints(EDataFlow.eRender, 0x00000001 /* ACTIVE */, out var collection) == 0 && collection is not null)
                 {
-                    collection.GetCount(out uint count);
-                    for (uint i = 0; i < count; i++)
+                    try
                     {
-                        if (collection.Item(i, out var device) == 0)
+                        collection.GetCount(out uint count);
+                        for (uint i = 0; i < count; i++)
                         {
-                            device.GetId(out string id);
-                            string label = string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase)
-                                ? LocalizationService.Pick($"Audio output #{i + 1} [Default]", $"Аудиовыход #{i + 1} [По умолчанию]")
-                                : LocalizationService.Pick($"Audio output #{i + 1}", $"Аудиовыход #{i + 1}");
-                            list.Add((id, label));
-                            Marshal.ReleaseComObject(device);
+                            if (collection.Item(i, out var device) == 0 && device is not null)
+                            {
+                                try
+                                {
+                                    device.GetId(out string id);
+                                    var (fullName, shortName) = ReadDeviceNames(device, i);
+                                    bool isDef = string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase);
+                                    list.Add((id, fullName, shortName, isDef));
+                                }
+                                finally
+                                {
+                                    Marshal.ReleaseComObject(device);
+                                }
+                            }
                         }
                     }
-                    Marshal.ReleaseComObject(collection);
+                    finally
+                    {
+                        Marshal.ReleaseComObject(collection);
+                    }
                 }
             }
             finally
@@ -182,14 +223,97 @@ public sealed class WasapiAudioCaptureService : IDisposable
         return list;
     }
 
+    internal static (string FullName, string ShortName) ReadDeviceNames(IMMDevice device, uint index)
+    {
+        string fallback = LocalizationService.Pick($"Audio Output #{index + 1}", $"Аудиовыход #{index + 1}");
+        string shortFallback = LocalizationService.Pick($"Output #{index + 1}", $"Выход #{index + 1}");
+        IPropertyStore? store = null;
+        try
+        {
+            if (device.OpenPropertyStore(0 /* STGM_READ */, out store) != 0 || store is null)
+                return (fallback, shortFallback);
+
+            string? friendly = ReadPropString(store, PKEY_Device_FriendlyName);
+            string? desc = ReadPropString(store, PKEY_Device_DeviceDesc);
+
+            string fullName = !string.IsNullOrWhiteSpace(friendly)
+                ? friendly.Trim()
+                : (!string.IsNullOrWhiteSpace(desc) ? desc.Trim() : fallback);
+
+            string shortName = !string.IsNullOrWhiteSpace(desc)
+                ? desc.Trim()
+                : ExtractShortEndpointLabel(fullName, index);
+
+            if (shortName.Length > 18)
+                shortName = shortName[..17].TrimEnd() + "…";
+
+            return (fullName, shortName);
+        }
+        catch
+        {
+            return (fallback, shortFallback);
+        }
+        finally
+        {
+            if (store is not null)
+            {
+                try { Marshal.ReleaseComObject(store); } catch { }
+            }
+        }
+    }
+
+    private static string ExtractShortEndpointLabel(string fullName, uint index)
+    {
+        if (string.IsNullOrWhiteSpace(fullName))
+            return LocalizationService.Pick($"Output #{index + 1}", $"Выход #{index + 1}");
+
+        int paren = fullName.IndexOf('(');
+        if (paren > 1)
+        {
+            string prefix = fullName[..paren].Trim();
+            if (!string.IsNullOrWhiteSpace(prefix))
+                return prefix;
+        }
+        return fullName.Trim();
+    }
+
+    private static string? ReadPropString(IPropertyStore store, PropertyKey key)
+    {
+        PropVariant pv = default;
+        try
+        {
+            if (store.GetValue(ref key, out pv) == 0 && pv.vt == 31 /* VT_LPWSTR */ && pv.pointerValue != IntPtr.Zero)
+            {
+                return Marshal.PtrToStringUni(pv.pointerValue);
+            }
+            return null;
+        }
+        finally
+        {
+            try { PropVariantClear(ref pv); } catch { }
+        }
+    }
+
     private void OnDefaultDeviceChanged()
     {
         if (_targetDeviceId is null && _isRunning && !_disposed)
         {
-            Task.Run(() =>
+            if (Interlocked.Exchange(ref _restartScheduled, 1) != 0)
+                return;
+
+            _ = Task.Run(async () =>
             {
-                if (_isRunning && !_disposed)
-                    Start(null);
+                try
+                {
+                    await Task.Delay(180).ConfigureAwait(false);
+                    Interlocked.Exchange(ref _restartScheduled, 0);
+                    if (_isRunning && !_disposed)
+                        Start(null);
+                }
+                catch
+                {
+                    Interlocked.Exchange(ref _restartScheduled, 0);
+                }
             });
         }
     }
@@ -224,8 +348,7 @@ public sealed class WasapiAudioCaptureService : IDisposable
             if (hr != 0 || formatPtr == IntPtr.Zero) return;
 
             var wf = Marshal.PtrToStructure<WAVEFORMATEX>(formatPtr);
-            if (wf.nSamplesPerSec >= 8000)
-                _sampleRate = (int)wf.nSamplesPerSec;
+            int endpointSampleRate = wf.nSamplesPerSec >= 8000 ? (int)wf.nSamplesPerSec : 48000;
 
             bool isFloat = IsIeeeFloatFormat(formatPtr, wf);
             int channels = Math.Max(1, (int)wf.nChannels);
@@ -259,9 +382,11 @@ public sealed class WasapiAudioCaptureService : IDisposable
             {
                 Thread.Sleep(8);
 
-                while (!token.IsCancellationRequested &&
-                       captureClient.GetNextPacketSize(out uint packetFrames) == 0 &&
-                       packetFrames > 0)
+                int nextHr = captureClient.GetNextPacketSize(out uint packetFrames);
+                if (nextHr != 0)
+                    break; // Endpoint invalidated / format changed / disconnected -> exit cleanly
+
+                while (!token.IsCancellationRequested && packetFrames > 0)
                 {
                     hr = captureClient.GetBuffer(out IntPtr dataPtr, out uint numFrames, out uint flags, out _, out _);
                     if (hr != 0) break;
@@ -271,14 +396,18 @@ public sealed class WasapiAudioCaptureService : IDisposable
                         bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                         if (!silent && numFrames > 0 && dataPtr != IntPtr.Zero)
                         {
-                            PushFrames(dataPtr, (int)numFrames, channels, bytesPerSample, blockAlign, isFloat);
+                            PushFrames(dataPtr, (int)numFrames, channels, bytesPerSample, blockAlign, isFloat, endpointSampleRate);
                         }
                     }
                     finally
                     {
                         captureClient.ReleaseBuffer(numFrames);
                     }
+
+                    nextHr = captureClient.GetNextPacketSize(out packetFrames);
+                    if (nextHr != 0) break;
                 }
+                if (nextHr != 0) break;
             }
 
             audioClient.Stop();
@@ -297,7 +426,7 @@ public sealed class WasapiAudioCaptureService : IDisposable
         }
     }
 
-    private void PushFrames(IntPtr dataPtr, int numFrames, int channels, int bytesPerSample, int blockAlign, bool isFloat)
+    private void PushFrames(IntPtr dataPtr, int numFrames, int channels, int bytesPerSample, int blockAlign, bool isFloat, int endpointSampleRate)
     {
         float peakInPacket = 0f;
         Span<float> tempMono = numFrames <= 1024 ? stackalloc float[numFrames] : new float[numFrames];
@@ -356,6 +485,7 @@ public sealed class WasapiAudioCaptureService : IDisposable
         // preventing silent secondary endpoints from overwriting an active endpoint's audio!
         if (peakInPacket > 0.00004f)
         {
+            _sampleRate = endpointSampleRate;
             lock (_bufferLock)
             {
                 int ringLen = _ringBuffer.Length;
@@ -380,12 +510,17 @@ public sealed class WasapiAudioCaptureService : IDisposable
             var ext = Marshal.PtrToStructure<WAVEFORMATEXTENSIBLE>(formatPtr);
             if (ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
                 return true;
+            if (ext.SubFormat == KSDATAFORMAT_SUBTYPE_PCM)
+                return false;
 
             // Extra safety check at raw byte offset 24 (18-byte WAVEFORMATEX + 2-byte validBits + 4-byte channelMask)
             byte[] guidBytes = new byte[16];
             Marshal.Copy(IntPtr.Add(formatPtr, 24), guidBytes, 0, 16);
-            if (new Guid(guidBytes) == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
+            var rawSub = new Guid(guidBytes);
+            if (rawSub == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
                 return true;
+            if (rawSub == KSDATAFORMAT_SUBTYPE_PCM)
+                return false;
         }
 
         // In WASAPI shared mode, 32-bit mix format is virtually always IEEE float
@@ -394,9 +529,12 @@ public sealed class WasapiAudioCaptureService : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        Stop();
+        lock (_lifecycleLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            StopLocked();
+        }
     }
 
     [ComVisible(true)]

@@ -3,26 +3,48 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using PulseIsland.Core;
 using PulseIsland.Interop;
+using PulseIsland.Services;
 
 namespace PulseIsland.UI;
+
+public enum LassoCaptureIntent
+{
+    Translate,
+    AskAiAboutImage
+}
+
+public sealed record LassoCaptureResult(
+    Int32Rect PhysicalRect,
+    Rect DipRect,
+    LassoCaptureIntent Intent);
 
 public partial class LassoOverlayWindow : Window
 {
     private readonly record struct TrailSample(Point Position, long TimestampMs);
 
     private static readonly SolidColorBrush[] WhiteAlphaBrushes = CreateAlphaBrushPalette();
+    private static readonly SolidColorBrush AiModeAccentBrush = CreateFrozenBrush(Color.FromRgb(120, 210, 255));
 
     private readonly AppSettings _settings;
     private readonly List<TrailSample> _trailSamples = new(128);
-    private readonly List<Point> _lassoPoints = new(256);
     private readonly List<Line> _linePool = new(128);
-    private bool _isDragging;
-    private bool _completed;
+    private Rect _virtualScreenPhysical;
 
-    private TaskCompletionSource<(Int32Rect PhysicalRect, Rect DipRect)?>? _tcs;
+    private bool _isDragging;
+    private bool _isRightButtonDrag;
+    private bool _completed;
+    private Point _dragStartDip;
+    private Point _dragCurrentDip;
+    private Point _dragStartPhysical;
+    private Point _dragCurrentPhysical;
+    private bool _hasStartPhysical;
+    private bool _hasCurrentPhysical;
+
+    private TaskCompletionSource<LassoCaptureResult?>? _tcs;
 
     public LassoOverlayWindow(AppSettings settings)
     {
@@ -34,26 +56,43 @@ public partial class LassoOverlayWindow : Window
         MouseMove += OnMouseMove;
         MouseLeftButtonDown += OnMouseLeftButtonDown;
         MouseLeftButtonUp += OnMouseLeftButtonUp;
-        MouseRightButtonDown += (_, _) => CancelCapture();
-        KeyDown += (_, e) =>
+        MouseRightButtonDown += OnMouseRightButtonDown;
+        MouseRightButtonUp += OnMouseRightButtonUp;
+        KeyDown += OnKeyDownHandler;
+        KeyUp += (_, _) =>
         {
-            if (e.Key == Key.Escape)
-                CancelCapture();
+            if (_isDragging)
+                UpdateLiveSelectionBox();
         };
     }
 
-    public Task<(Int32Rect PhysicalRect, Rect DipRect)?> CaptureSelectionAsync()
+    public void CancelFromExternal() => CancelCapture();
+
+    public Task<LassoCaptureResult?> CaptureSelectionAsync()
     {
-        _tcs = new TaskCompletionSource<(Int32Rect, Rect)?>();
+        _tcs = new TaskCompletionSource<LassoCaptureResult?>();
         Show();
         Activate();
         Focus();
         return _tcs.Task;
     }
 
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            CancelCapture();
+            return;
+        }
+
+        if (_isDragging)
+            UpdateLiveSelectionBox();
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         var vs = MonitorService.GetVirtualScreenPhysicalBounds();
+        _virtualScreenPhysical = vs;
         IntPtr hwnd = new WindowInteropHelper(this).Handle;
 
         if (hwnd != IntPtr.Zero)
@@ -76,6 +115,17 @@ public partial class LassoOverlayWindow : Window
             Height = vs.Height / scaleY;
         }
 
+        // Show cursor reticle immediately at current mouse position even before first MouseMove
+        if (Win32Api.GetCursorPos(out var pt))
+        {
+            try
+            {
+                var dip = PointFromScreen(new Point(pt.X, pt.Y));
+                PositionReticle(dip);
+            }
+            catch { }
+        }
+
         CompositionTarget.Rendering += OnRenderFrame;
     }
 
@@ -88,89 +138,230 @@ public partial class LassoOverlayWindow : Window
         }
     }
 
+    private void PositionReticle(Point pos)
+    {
+        CursorReticle.Visibility = Visibility.Visible;
+        Canvas.SetLeft(CursorReticle, pos.X - CursorReticle.Width * 0.5);
+        Canvas.SetTop(CursorReticle, pos.Y - CursorReticle.Height * 0.5);
+    }
+
+    private LassoCaptureIntent GetCurrentIntent()
+    {
+        if (_isRightButtonDrag || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+            return LassoCaptureIntent.AskAiAboutImage;
+
+        return LassoCaptureIntent.Translate;
+    }
+
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
         Point pos = e.GetPosition(OverlayCanvas);
-
-        CursorDot.Visibility = Visibility.Visible;
-        Canvas.SetLeft(CursorDot, pos.X - CursorDot.Width * 0.5);
-        Canvas.SetTop(CursorDot, pos.Y - CursorDot.Height * 0.5);
-
+        PositionReticle(pos);
         _trailSamples.Add(new TrailSample(pos, Environment.TickCount64));
 
         if (_isDragging)
         {
-            if (_lassoPoints.Count == 0 || (pos - _lassoPoints[^1]).Length >= 1.5)
+            _dragCurrentDip = pos;
+            if (Win32Api.GetCursorPos(out var physPt))
             {
-                _lassoPoints.Add(pos);
-                LassoPolyline.Points.Add(pos);
-                UpdateLiveSelectionBox();
+                _dragCurrentPhysical = new Point(physPt.X, physPt.Y);
+                _hasCurrentPhysical = true;
             }
+
+            UpdateLiveSelectionBox();
         }
     }
 
     private void UpdateLiveSelectionBox()
     {
-        var boundsDip = new Rect(0, 0, Math.Max(100, ActualWidth), Math.Max(100, ActualHeight));
-        var box = LassoGeometryHelper.ComputeBoundingBox(_lassoPoints, boundsDip, padding: 14.0);
+        double canvasW = Math.Max(100, ActualWidth);
+        double canvasH = Math.Max(100, ActualHeight);
+        var boundsDip = new Rect(0, 0, canvasW, canvasH);
+        var box = LassoGeometryHelper.ComputeRectangleBox(_dragStartDip, _dragCurrentDip, boundsDip, padding: 2.0);
         if (box is null)
         {
-            SelectionPreviewBorder.Visibility = Visibility.Collapsed;
+            SelectionPreviewOuter.Visibility = Visibility.Collapsed;
+            SelectionSizeBadge.Visibility = Visibility.Collapsed;
+            DimBackdropPath.Visibility = Visibility.Collapsed;
             return;
         }
 
-        SelectionPreviewBorder.Visibility = Visibility.Visible;
-        SelectionPreviewBorder.Width = box.Value.Width;
-        SelectionPreviewBorder.Height = box.Value.Height;
-        Canvas.SetLeft(SelectionPreviewBorder, box.Value.X);
-        Canvas.SetTop(SelectionPreviewBorder, box.Value.Y);
+        var rect = new Rect(box.Value.X, box.Value.Y, box.Value.Width, box.Value.Height);
+        var intent = GetCurrentIntent();
+        bool isAi = intent == LassoCaptureIntent.AskAiAboutImage;
+
+        // Cut-out dim mask around the exact selection rectangle
+        DimBackdropPath.Data = new CombinedGeometry(
+            GeometryCombineMode.Exclude,
+            new RectangleGeometry(boundsDip),
+            new RectangleGeometry(rect, 4, 4));
+        DimBackdropPath.Visibility = Visibility.Visible;
+
+        // Update selection rectangle border (shrinks smoothly when cursor moves back!)
+        SelectionPreviewOuter.Visibility = Visibility.Visible;
+        SelectionPreviewOuter.Width = rect.Width + 4;
+        SelectionPreviewOuter.Height = rect.Height + 4;
+        Canvas.SetLeft(SelectionPreviewOuter, rect.X - 2);
+        Canvas.SetTop(SelectionPreviewOuter, rect.Y - 2);
+
+        Brush modeAccent = isAi
+            ? AiModeAccentBrush
+            : (TryFindResource("ThemeAccentBrush") as Brush ?? Brushes.White);
+
+        SelectionPreviewInner.BorderBrush = modeAccent;
+        SelectionSizeBadge.BorderBrush = modeAccent;
+        SelectionModeDot.Fill = modeAccent;
+        CursorCoreDot.Fill = modeAccent;
+        CursorInnerRing.Stroke = isAi ? AiModeAccentBrush : Brushes.White;
+
+        string modeLabel = isAi
+            ? LocalizationService.Pick("AI Vision", "ИИ по фото")
+            : LocalizationService.Pick("Translate", "Перевод");
+        SelectionSizeText.Text = $"{box.Value.Width} × {box.Value.Height} • {modeLabel}";
+        SelectionSizeBadge.Visibility = Visibility.Visible;
+        SelectionSizeBadge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double badgeW = SelectionSizeBadge.DesiredSize.Width;
+        double badgeH = SelectionSizeBadge.DesiredSize.Height;
+
+        double badgeLeft = Math.Clamp(rect.X, 8, Math.Max(8, canvasW - badgeW - 8));
+        double badgeTop = rect.Y >= badgeH + 10
+            ? rect.Y - badgeH - 8
+            : Math.Min(canvasH - badgeH - 8, rect.Bottom + 8);
+        Canvas.SetLeft(SelectionSizeBadge, badgeLeft);
+        Canvas.SetTop(SelectionSizeBadge, badgeTop);
+    }
+
+    private void BeginDrag(Point pos, bool rightButton)
+    {
+        _isDragging = true;
+        _isRightButtonDrag = rightButton;
+        _dragStartDip = pos;
+        _dragCurrentDip = pos;
+
+        if (Win32Api.GetCursorPos(out var physPt))
+        {
+            _dragStartPhysical = new Point(physPt.X, physPt.Y);
+            _dragCurrentPhysical = _dragStartPhysical;
+            _hasStartPhysical = true;
+            _hasCurrentPhysical = true;
+        }
+        else
+        {
+            _hasStartPhysical = false;
+            _hasCurrentPhysical = false;
+        }
+
+        SelectionPreviewOuter.Visibility = Visibility.Collapsed;
+        SelectionSizeBadge.Visibility = Visibility.Collapsed;
+        DimBackdropPath.Visibility = Visibility.Collapsed;
+        AnimateOrbScale(0.76);
+        CaptureMouse();
+    }
+
+    private void AnimateOrbScale(double target)
+    {
+        var dur = TimeSpan.FromMilliseconds(120);
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        CursorOrbScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(target, dur) { EasingFunction = ease });
+        CursorOrbScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(target, dur) { EasingFunction = ease });
     }
 
     private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        _isDragging = true;
-        _lassoPoints.Clear();
-        LassoPolyline.Points.Clear();
-        SelectionPreviewBorder.Visibility = Visibility.Collapsed;
+        if (_isDragging)
+            return;
 
-        Point pos = e.GetPosition(OverlayCanvas);
-        _lassoPoints.Add(pos);
-        LassoPolyline.Points.Add(pos);
-        CaptureMouse();
+        BeginDrag(e.GetPosition(OverlayCanvas), rightButton: false);
+    }
+
+    private void OnMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_isDragging)
+        {
+            // Right-click while dragging with left button cancels immediately
+            CancelCapture();
+            return;
+        }
+
+        BeginDrag(e.GetPosition(OverlayCanvas), rightButton: true);
     }
 
     private async void OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (!_isDragging)
+        if (!_isDragging || _isRightButtonDrag)
             return;
 
+        await FinishDragAsync(e.GetPosition(OverlayCanvas), cancelIfTooSmall: false);
+    }
+
+    private async void OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isDragging || !_isRightButtonDrag)
+            return;
+
+        // Short right-click without dragging acts as cancel (classic Escape/RMB cancel UX)
+        await FinishDragAsync(e.GetPosition(OverlayCanvas), cancelIfTooSmall: true);
+    }
+
+    private async Task FinishDragAsync(Point endPos, bool cancelIfTooSmall)
+    {
+        var intent = GetCurrentIntent();
         _isDragging = false;
+        _isRightButtonDrag = false;
+        AnimateOrbScale(1.0);
         ReleaseMouseCapture();
 
-        Point pos = e.GetPosition(OverlayCanvas);
-        _lassoPoints.Add(pos);
+        _dragCurrentDip = endPos;
+        if (Win32Api.GetCursorPos(out var physPt))
+        {
+            _dragCurrentPhysical = new Point(physPt.X, physPt.Y);
+            _hasCurrentPhysical = true;
+        }
 
         var boundsDip = new Rect(0, 0, Math.Max(100, ActualWidth), Math.Max(100, ActualHeight));
-        var localDipRect = LassoGeometryHelper.ComputeBoundingBox(_lassoPoints, boundsDip, padding: 14.0);
+        var localDipRect = LassoGeometryHelper.ComputeRectangleBox(_dragStartDip, _dragCurrentDip, boundsDip, padding: 2.0);
 
         if (localDipRect is null)
         {
-            _lassoPoints.Clear();
-            LassoPolyline.Points.Clear();
-            SelectionPreviewBorder.Visibility = Visibility.Collapsed;
+            SelectionPreviewOuter.Visibility = Visibility.Collapsed;
+            SelectionSizeBadge.Visibility = Visibility.Collapsed;
+            DimBackdropPath.Visibility = Visibility.Collapsed;
+            if (cancelIfTooSmall)
+                CancelCapture();
             return;
         }
 
-        Point topLeftPhysical = PointToScreen(new Point(localDipRect.Value.X, localDipRect.Value.Y));
-        Point bottomRightPhysical = PointToScreen(new Point(
-            localDipRect.Value.X + localDipRect.Value.Width,
-            localDipRect.Value.Y + localDipRect.Value.Height));
+        // Compute exact physical screen capture rectangle directly from Win32 GetCursorPos coordinates
+        // (avoids mixed-DPI multi-monitor WPF PointToScreen drift), falling back to PointToScreen if unavailable.
+        Int32Rect physicalRect;
+        var vsBounds = _virtualScreenPhysical.Width > 0 && _virtualScreenPhysical.Height > 0
+            ? _virtualScreenPhysical
+            : MonitorService.GetVirtualScreenPhysicalBounds();
+        var physBox = _hasStartPhysical && _hasCurrentPhysical
+            ? LassoGeometryHelper.ComputeRectangleBox(_dragStartPhysical, _dragCurrentPhysical, vsBounds, padding: 2.0)
+            : null;
 
-        var physicalRect = new Int32Rect(
-            (int)Math.Round(topLeftPhysical.X),
-            (int)Math.Round(topLeftPhysical.Y),
-            Math.Max(16, (int)Math.Round(bottomRightPhysical.X - topLeftPhysical.X)),
-            Math.Max(16, (int)Math.Round(bottomRightPhysical.Y - topLeftPhysical.Y)));
+        if (physBox is not null)
+        {
+            physicalRect = new Int32Rect(
+                physBox.Value.X,
+                physBox.Value.Y,
+                Math.Max(16, physBox.Value.Width),
+                Math.Max(16, physBox.Value.Height));
+        }
+        else
+        {
+            Point topLeftPhysical = PointToScreen(new Point(localDipRect.Value.X, localDipRect.Value.Y));
+            Point bottomRightPhysical = PointToScreen(new Point(
+                localDipRect.Value.X + localDipRect.Value.Width,
+                localDipRect.Value.Y + localDipRect.Value.Height));
+
+            physicalRect = new Int32Rect(
+                (int)Math.Round(topLeftPhysical.X),
+                (int)Math.Round(topLeftPhysical.Y),
+                Math.Max(16, (int)Math.Round(bottomRightPhysical.X - topLeftPhysical.X)),
+                Math.Max(16, (int)Math.Round(bottomRightPhysical.Y - topLeftPhysical.Y)));
+        }
 
         var screenDipRect = new Rect(
             Left + localDipRect.Value.X,
@@ -181,11 +372,11 @@ public partial class LassoOverlayWindow : Window
         _completed = true;
         Opacity = 0;
         Hide();
-        // Wait for DWM to clear overlay completely before BitBlt screen capture
-        await Task.Delay(75);
+        // Wait for DWM compositor to clear overlay completely before BitBlt screen capture
+        await Task.Delay(65);
         Close();
 
-        _tcs?.TrySetResult((physicalRect, screenDipRect));
+        _tcs?.TrySetResult(new LassoCaptureResult(physicalRect, screenDipRect, intent));
     }
 
     private void CancelCapture()
@@ -193,6 +384,7 @@ public partial class LassoOverlayWindow : Window
         if (_isDragging)
         {
             _isDragging = false;
+            _isRightButtonDrag = false;
             ReleaseMouseCapture();
         }
         _completed = true;
@@ -270,5 +462,12 @@ public partial class LassoOverlayWindow : Window
             palette[i] = brush;
         }
         return palette;
+    }
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var b = new SolidColorBrush(color);
+        b.Freeze();
+        return b;
     }
 }

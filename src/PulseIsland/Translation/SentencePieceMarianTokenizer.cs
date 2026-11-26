@@ -204,35 +204,82 @@ internal sealed class SentencePieceMarianTokenizer
         s = Regex.Replace(s, @"\*{2,}", string.Empty);
         s = Regex.Replace(s, @"[!?]{2,}", m => m.Value.Contains('?') ? "?" : "!");
 
+        // Expand common casual English abbreviations & contractions missing apostrophes
+        // so compact MarianMT models (e.g. opus-mt-en-ru) never truncate or mistranslate memes/chats/subtitles.
+        s = ExpandCasualEnglishForNmt(s);
+
         int letters = 0;
         int uppers = 0;
+        int lowers = 0;
         foreach (char ch in s)
         {
             if (char.IsLetter(ch))
             {
                 letters++;
-                if (char.IsUpper(ch))
-                    uppers++;
+                if (char.IsUpper(ch)) uppers++;
+                else if (char.IsLower(ch)) lowers++;
             }
         }
 
-        // Opus-MT is cased; ALL-CAPS text (e.g., shouts/memes/UI headers) fragments badly into single chars.
+        // Opus-MT is cased; ALL-CAPS text (e.g., shouts/memes/UI headers) fragments badly into single chars,
+        // and all-lowercase casual sentences also translate significantly more accurately with sentence-initial capitalization.
         if (letters >= 4 && uppers * 4 >= letters * 3)
         {
-            string lower = s.ToLowerInvariant();
-            var chars = lower.ToCharArray();
-            for (int i = 0; i < chars.Length; i++)
-            {
-                if (char.IsLetter(chars[i]))
-                {
-                    chars[i] = char.ToUpperInvariant(chars[i]);
-                    break;
-                }
-            }
-            s = new string(chars);
+            s = CapitalizeFirstLetter(s.ToLowerInvariant());
+        }
+        else if (letters >= 4 && uppers == 0 && lowers == letters)
+        {
+            s = CapitalizeFirstLetter(s);
         }
 
         return s.Trim();
+    }
+
+    private static string CapitalizeFirstLetter(string text)
+    {
+        var chars = text.ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+        return new string(chars);
+    }
+
+    private static string ExpandCasualEnglishForNmt(string s)
+    {
+        // Only apply when text contains Latin letters
+        if (!s.Any(c => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+            return s;
+
+        s = Regex.Replace(s, @"\bw/o\b", "without", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bw/", "with ", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\byrs\b", "years", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\byr\b", "year", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bhrs\b", "hours", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bmins\b", "minutes", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bsecs\b", "seconds", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bur\b", "your", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bu\b", "you", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bim\b", "I'm", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bive\b", "I've", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bdont\b", "don't", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bcant\b", "can't", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bwont\b", "won't", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bdidnt\b", "didn't", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bisnt\b", "isn't", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\barent\b", "aren't", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bidk\b", "I don't know", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\btbh\b", "to be honest", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bngl\b", "not going to lie", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\brn\b", "right now", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bpls\b", "please", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bthx\b", "thanks", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\bbtw\b", "by the way", RegexOptions.IgnoreCase);
+        return s;
     }
 
     private static (Dictionary<string, long> Vocab, Dictionary<long, string> IdToPiece) LoadVocabJson(string vocabPath)

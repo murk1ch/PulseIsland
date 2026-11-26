@@ -8,12 +8,14 @@
         ShowInTaskbar="False"
         SizeToContent="Height"
         ResizeMode="NoResize"
-        Width="530">
+        Width="560"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <Geometry x:Key="CloseIconGeometry">M 1,1 L 9,9 M 9,1 L 1,9</Geometry>
         <Geometry x:Key="AiStarGeometry">M 6,0.5 L 7.4,4.6 L 11.5,6 L 7.4,7.4 L 6,11.5 L 4.6,7.4 L 0.5,6 L 4.6,4.6 Z</Geometry>
+        <Geometry x:Key="VoiceMicGeometry">M 4.5,1 A 1.5,1.5 0 0 1 7.5,1 L 7.5,5.5 A 1.5,1.5 0 0 1 4.5,5.5 Z M 2.5,5 A 3.5,3.5 0 0 0 9.5,5 M 6,8.5 L 6,11 M 4,11 L 8,11</Geometry>
 
         <!-- Slim Dark Glass ScrollBar matching PulseIsland UI -->
         <Style x:Key="AiPopupScrollThumbStyle" TargetType="Thumb">
@@ -135,6 +137,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <!-- Top Specular Glass Reflection -->
@@ -146,11 +149,19 @@
                         Background="{DynamicResource ThemeReflectionBrush}"
                         IsHitTestVisible="False" />
 
-                <!-- Row 0: Header -->
-                <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Border Padding="10,4"
+                <!-- Row 0: Header (2-row responsive Grid so badges & buttons NEVER clip or overlap) -->
+                <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0"
+                                HorizontalAlignment="Left"
+                                Padding="10,4"
                                 CornerRadius="10"
+                                Margin="0,0,8,0"
                                 Background="{DynamicResource ThemeHighlightBrush}"
                                 BorderBrush="{DynamicResource ThemeAccentBrush}"
                                 BorderThickness="1">
@@ -161,84 +172,126 @@
                                       Stretch="Uniform"
                                       Margin="0,0,6,0"
                                       VerticalAlignment="Center" />
-                                <TextBlock Text="Qwen 2.5 3B"
+                                <TextBlock x:Name="ModelNameBadgeText"
+                                           Text="Qwen 2.5 7B"
                                            Foreground="{DynamicResource ThemeTextPrimaryBrush}"
                                            FontSize="11"
                                            FontWeight="Bold"
+                                           TextTrimming="CharacterEllipsis"
                                            VerticalAlignment="Center" />
                             </StackPanel>
                         </Border>
-                        <Border Padding="8,4"
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button Content="{DynamicResource Loc_Ai_NewChatBtn}"
+                                    Click="OnClearClick"
+                                    Style="{StaticResource GlassActionButtonStyle}"
+                                    Padding="9,4"
+                                    Margin="0,0,5,0"
+                                    FontSize="11"
+                                    ToolTip="{DynamicResource Loc_Ai_NewChatTooltip}" />
+                            <Button x:Name="CopyButton"
+                                    Content="{DynamicResource Loc_Copy}"
+                                    Click="OnCopyClick"
+                                    Style="{StaticResource GlassActionButtonStyle}"
+                                    Padding="9,4"
+                                    Margin="0,0,5,0"
+                                    FontSize="11" />
+                            <Button Click="OnCloseClick"
+                                    Style="{StaticResource GlassActionButtonStyle}"
+                                    Width="26"
+                                    Height="26"
+                                    Padding="0"
+                                    ToolTip="{DynamicResource Loc_CloseEsc}">
+                                <Path Data="{StaticResource CloseIconGeometry}"
+                                      Stroke="{DynamicResource ThemeTextPrimaryBrush}"
+                                      StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      Width="9" Height="9"
+                                      Stretch="Uniform" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <WrapPanel Orientation="Horizontal" Margin="0,5,0,0">
+                        <Border Padding="8,3"
                                 CornerRadius="9"
-                                Margin="6,0,0,0"
+                                Margin="0,0,6,0"
                                 Background="{DynamicResource ThemeControlBgBrush}"
                                 BorderBrush="{DynamicResource ThemeCardBorderBrush}"
                                 BorderThickness="1"
                                 VerticalAlignment="Center">
                             <TextBlock x:Name="BackendBadgeText"
-                                       Text="Auto"
+                                       Text="{DynamicResource Loc_Auto}"
                                        Foreground="{DynamicResource ThemeAccentBrush}"
                                        FontSize="10"
                                        FontWeight="Bold" />
                         </Border>
-                    </StackPanel>
+                        <Border x:Name="ChatMemoryBadge"
+                                Visibility="Collapsed"
+                                Padding="7,3"
+                                CornerRadius="9"
+                                Background="{DynamicResource ThemeControlBgBrush}"
+                                BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                BorderThickness="1"
+                                VerticalAlignment="Center"
+                                ToolTip="{DynamicResource Loc_Ai_ChatBadgeTooltip}">
+                            <TextBlock x:Name="ChatMemoryBadgeText"
+                                       Text="{DynamicResource Loc_Ai_ChatBadgeDefault}"
+                                       Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold" />
+                        </Border>
+                    </WrapPanel>
+                </StackPanel>
 
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="{DynamicResource Loc_Clear}"
-                                Click="OnClearClick"
-                                Style="{StaticResource GlassActionButtonStyle}"
-                                Padding="10,4"
-                                Margin="0,0,6,0"
-                                FontSize="11" />
-                        <Button x:Name="CopyButton"
-                                Content="{DynamicResource Loc_Copy}"
-                                Click="OnCopyClick"
-                                Style="{StaticResource GlassActionButtonStyle}"
-                                Padding="10,4"
-                                Margin="0,0,6,0"
-                                FontSize="11" />
-                        <Button Click="OnCloseClick"
-                                Style="{StaticResource GlassActionButtonStyle}"
-                                Width="26"
-                                Height="26"
-                                Padding="0"
-                                ToolTip="{DynamicResource Loc_CloseEsc}">
-                            <Path Data="{StaticResource CloseIconGeometry}"
-                                  Stroke="{DynamicResource ThemeTextPrimaryBrush}"
-                                  StrokeThickness="1.5"
-                                  StrokeStartLineCap="Round"
-                                  StrokeEndLineCap="Round"
-                                  Width="9" Height="9"
-                                  Stretch="Uniform" />
-                        </Button>
-                    </StackPanel>
-                </DockPanel>
-
-                <!-- Row 1: Quick Action Chips + Prompt Input -->
+                <!-- Row 1: Quick Action Chips + Custom User Prompt Chips + Voice/Prompt Input -->
                 <StackPanel Grid.Row="1" Margin="0,0,0,10">
-                    <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <WrapPanel Orientation="Horizontal" Margin="0,0,0,6">
                         <Button Content="{DynamicResource Loc_Ai_WeatherBtn}"
                                 Click="OnWeatherClick"
                                 Style="{StaticResource GlassActionButtonStyle}"
-                                Padding="11,5"
-                                FontSize="11.5"
-                                Margin="0,0,6,0" />
+                                Padding="10,4"
+                                FontSize="11"
+                                Margin="0,0,5,4" />
                         <Button Content="{DynamicResource Loc_Ai_SummarizeClipBtn}"
                                 Click="OnSummarizeClipboardClick"
                                 Style="{StaticResource GlassActionButtonStyle}"
-                                Padding="11,5"
-                                FontSize="11.5"
-                                Margin="0,0,6,0" />
+                                Padding="10,4"
+                                FontSize="11"
+                                Margin="0,0,5,4" />
                         <Button Content="{DynamicResource Loc_Ai_TranslateAiBtn}"
                                 Click="OnTranslateClipboardClick"
                                 Style="{StaticResource GlassActionButtonStyle}"
-                                Padding="11,5"
-                                FontSize="11.5" />
+                                Padding="10,4"
+                                FontSize="11"
+                                Margin="0,0,5,4" />
+                        <ItemsControl x:Name="CustomPromptsItemsControl">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding Title}"
+                                            Tag="{Binding}"
+                                            ToolTip="{Binding PromptTemplate}"
+                                            Click="OnCustomPromptChipClick"
+                                            Style="{StaticResource GlassActionButtonStyle}"
+                                            Padding="10,4"
+                                            FontSize="11"
+                                            Margin="0,0,5,4" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </WrapPanel>
 
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <Border Grid.Column="0"
@@ -247,7 +300,7 @@
                                 BorderThickness="1"
                                 CornerRadius="12"
                                 Padding="11,7"
-                                Margin="0,0,8,0">
+                                Margin="0,0,6,0">
                             <Grid>
                                 <TextBox x:Name="PromptInputBox"
                                          Background="Transparent"
@@ -258,9 +311,11 @@
                                          AcceptsReturn="False"
                                          VerticalContentAlignment="Center"
                                          KeyDown="OnPromptKeyDown" />
-                                <TextBlock Text="{DynamicResource Loc_Ai_PromptPlaceholder}"
+                                <TextBlock x:Name="PromptPlaceholderText"
+                                           Text="{DynamicResource Loc_Ai_PromptPlaceholder}"
                                            Foreground="{DynamicResource ThemeTextMutedBrush}"
                                            FontSize="11.5"
+                                           TextTrimming="CharacterEllipsis"
                                            VerticalAlignment="Center"
                                            IsHitTestVisible="False">
                                     <TextBlock.Style>
@@ -276,15 +331,49 @@
                                 </TextBlock>
                             </Grid>
                         </Border>
-                        <Button x:Name="AskButton"
+
+                        <!-- Offline Voice Dictation Button (Whisper.cpp) with Live Level Pulse -->
+                        <Button x:Name="VoiceDictateButton"
                                 Grid.Column="1"
+                                Click="OnVoiceDictateClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Width="34"
+                                Height="34"
+                                Padding="0"
+                                Margin="0,0,6,0"
+                                ToolTip="{DynamicResource Loc_Ai_MicTooltip}">
+                            <Grid>
+                                <Ellipse x:Name="VoicePulseRing"
+                                         Width="26" Height="26"
+                                         Fill="#38EF4444"
+                                         Visibility="Collapsed"
+                                         RenderTransformOrigin="0.5,0.5">
+                                    <Ellipse.RenderTransform>
+                                        <ScaleTransform x:Name="VoicePulseScale" ScaleX="1" ScaleY="1" />
+                                    </Ellipse.RenderTransform>
+                                </Ellipse>
+                                <Path x:Name="VoiceMicIcon"
+                                      Data="{StaticResource VoiceMicGeometry}"
+                                      Stroke="{DynamicResource ThemeAccentBrush}"
+                                      StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      Width="12" Height="13"
+                                      Stretch="Uniform"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center" />
+                            </Grid>
+                        </Button>
+
+                        <Button x:Name="AskButton"
+                                Grid.Column="2"
                                 Content="{DynamicResource Loc_Ai_AskBtn}"
                                 Click="OnAskClick"
                                 Style="{StaticResource GlassActionButtonStyle}"
                                 Padding="14,7"
                                 FontSize="12" />
                         <Button x:Name="StopButton"
-                                Grid.Column="1"
+                                Grid.Column="2"
                                 Content="{DynamicResource Loc_Ai_StopBtn}"
                                 Visibility="Collapsed"
                                 Click="OnStopClick"
@@ -314,7 +403,7 @@
                     </Border>
                 </Border>
 
-                <!-- Row 3: Framed Selectable AI Answer Card -->
+                <!-- Row 3: Framed Selectable Rich AI Answer Card (renders multi-turn chat, LaTeX math, Markdown & Tables) -->
                 <Border Grid.Row="3"
                         Background="{DynamicResource ThemeCardBgBrush}"
                         BorderBrush="{DynamicResource ThemeCardBorderBrush}"
@@ -329,27 +418,116 @@
                                    FontWeight="Bold"
                                    Margin="0,0,0,6" />
 
-                        <ScrollViewer x:Name="AnswerScrollViewer"
-                                      MaxHeight="340"
-                                      VerticalScrollBarVisibility="Auto">
-                            <TextBox x:Name="AnswerTextBox"
+                        <RichTextBox x:Name="AnswerRichTextBox"
                                      IsReadOnly="True"
+                                     IsDocumentEnabled="True"
+                                     MaxHeight="350"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Disabled"
                                      Background="Transparent"
                                      BorderThickness="0"
                                      Padding="0,0,6,0"
-                                     TextWrapping="Wrap"
                                      Foreground="{DynamicResource ThemeTextPrimaryBrush}"
                                      SelectionBrush="{DynamicResource ThemeAccentBrush}"
                                      FontSize="13.5"
                                      FontFamily="Segoe UI"
                                      Cursor="IBeam" />
-                        </ScrollViewer>
                     </StackPanel>
                 </Border>
 
-                <!-- Row 4: Source Text Snippet -->
-                <Border x:Name="SourceTextBorder"
+                <!-- Row 4: Attached Screenshot / Photo Preview for Vision LLM Q&A -->
+                <Border x:Name="AttachedImageBorder"
                         Grid.Row="4"
+                        Visibility="Collapsed"
+                        Margin="0,10,0,0"
+                        Padding="9,8"
+                        CornerRadius="12"
+                        Background="{DynamicResource ThemeControlBgBrush}"
+                        BorderBrush="{DynamicResource ThemeAccentBrush}"
+                        BorderThickness="1">
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right"
+                                Click="OnClearImageClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Width="22"
+                                Height="22"
+                                Padding="0"
+                                VerticalAlignment="Top"
+                                Margin="8,0,0,0"
+                                ToolTip="{DynamicResource Loc_Ai_RemovePhotoTooltip}">
+                            <Path Data="{StaticResource CloseIconGeometry}"
+                                  Stroke="{DynamicResource ThemeTextSecondaryBrush}"
+                                  StrokeThickness="1.4"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Width="8" Height="8"
+                                  Stretch="Uniform" />
+                        </Button>
+
+                        <Border DockPanel.Dock="Left"
+                                Width="74"
+                                Height="56"
+                                CornerRadius="8"
+                                Margin="0,0,10,0"
+                                Background="#FF0B0E18"
+                                BorderBrush="{DynamicResource ThemeCardBorderBrush}"
+                                BorderThickness="1">
+                            <Image x:Name="AttachedImagePreview"
+                                   Width="72"
+                                   Height="54"
+                                   Stretch="UniformToFill">
+                                <Image.Clip>
+                                    <RectangleGeometry Rect="0,0,72,54" RadiusX="7" RadiusY="7" />
+                                </Image.Clip>
+                            </Image>
+                        </Border>
+
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock x:Name="AttachedImageTitleText"
+                                       Text="{DynamicResource Loc_Ai_ScreenPhoto}"
+                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                       FontSize="11.5"
+                                       FontWeight="SemiBold" />
+                            <TextBlock x:Name="AttachedImageHintText"
+                                       Text="{DynamicResource Loc_Ai_VisionReadyHint}"
+                                       Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                       FontSize="10.5"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="0,2,0,6" />
+                            <WrapPanel Orientation="Horizontal">
+                                <Button Content="{DynamicResource Loc_Ai_WhatInPhotoBtn}"
+                                        Click="OnDescribeImageClick"
+                                        Style="{StaticResource GlassActionButtonStyle}"
+                                        Padding="9,3"
+                                        FontSize="10.5"
+                                        Margin="0,0,5,4" />
+                                <Button Content="{DynamicResource Loc_Ai_ExplainSolveBtn}"
+                                        Click="OnExplainImageClick"
+                                        Style="{StaticResource GlassActionButtonStyle}"
+                                        Padding="9,3"
+                                        FontSize="10.5"
+                                        Margin="0,0,5,4" />
+                                <Button Content="{DynamicResource Loc_Ai_ExtractTextBtn}"
+                                        Click="OnOcrImageClick"
+                                        Style="{StaticResource GlassActionButtonStyle}"
+                                        Padding="9,3"
+                                        FontSize="10.5"
+                                        Margin="0,0,5,4" />
+                                <Button Content="{DynamicResource Loc_Ai_TableExportBtn}"
+                                        Click="OnExtractTableClick"
+                                        Style="{StaticResource GlassActionButtonStyle}"
+                                        Padding="9,3"
+                                        FontSize="10.5"
+                                        Margin="0,0,0,4"
+                                        ToolTip="{DynamicResource Loc_Ai_TableExportTooltip}" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- Row 5: Source Text Snippet with Copy Original & Clear Context -->
+                <Border x:Name="SourceTextBorder"
+                        Grid.Row="5"
                         Visibility="Collapsed"
                         Margin="0,10,0,0"
                         Padding="10,7"
@@ -357,13 +535,45 @@
                         Background="{DynamicResource ThemeControlBgBrush}"
                         BorderBrush="{DynamicResource ThemeCardBorderBrush}"
                         BorderThickness="1">
-                    <TextBlock x:Name="SourceTextBlock"
-                               TextWrapping="Wrap"
-                               MaxHeight="60"
-                               TextTrimming="CharacterEllipsis"
-                               Foreground="{DynamicResource ThemeTextSecondaryBrush}"
-                               FontSize="11"
-                               FontFamily="Segoe UI" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="SourceTextBlock"
+                                   Grid.Column="0"
+                                   TextWrapping="Wrap"
+                                   MaxHeight="72"
+                                   TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                   FontSize="11"
+                                   FontFamily="Segoe UI"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                            <Button x:Name="CopySourceButton"
+                                    Content="{DynamicResource Loc_CopyOriginal}"
+                                    Click="OnCopySourceClick"
+                                    Style="{StaticResource GlassActionButtonStyle}"
+                                    Padding="8,3"
+                                    FontSize="10.5"
+                                    Margin="0,0,4,0" />
+                            <Button Click="OnClearContextClick"
+                                    Style="{StaticResource GlassActionButtonStyle}"
+                                    Width="22"
+                                    Height="22"
+                                    Padding="0"
+                                    ToolTip="{DynamicResource Loc_Ai_RemoveContextTooltip}">
+                                <Path Data="{StaticResource CloseIconGeometry}"
+                                      Stroke="{DynamicResource ThemeTextSecondaryBrush}"
+                                      StrokeThickness="1.4"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      Width="8" Height="8"
+                                      Stretch="Uniform" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
                 </Border>
             </Grid>
         </Border>

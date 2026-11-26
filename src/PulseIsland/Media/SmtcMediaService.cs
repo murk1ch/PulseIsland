@@ -280,8 +280,8 @@ public sealed class SmtcMediaService : IMediaSessionService
             if (!isSilentNow)
             {
                 UpdateTrack(new MediaTrackInfo(
-                    Title: string.IsNullOrWhiteSpace(_currentTrack.Title) ? LocalizationService.Pick("System audio", "Системное аудио") : _currentTrack.Title,
-                    Artist: string.IsNullOrWhiteSpace(_currentTrack.Artist) ? LocalizationService.Pick("Playing", "Воспроизведение") : _currentTrack.Artist,
+                    Title: string.IsNullOrWhiteSpace(_currentTrack.Title) ? LocalizationService.Pick("System Audio", "Системное аудио") : _currentTrack.Title,
+                    Artist: string.IsNullOrWhiteSpace(_currentTrack.Artist) ? LocalizationService.Pick("Now Playing", "Воспроизведение") : _currentTrack.Artist,
                     IsPlaying: true,
                     HasActiveSession: true,
                     Thumbnail: _cachedThumbnail,

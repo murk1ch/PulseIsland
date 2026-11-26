@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to attach build artifacts to (e.g. v1.0.0)'
+        description: 'Release tag to attach build artifacts to (e.g. v2.0.0)'
         required: true
-        default: 'v1.0.0'
+        default: 'v2.0.0'
 
 permissions:
   contents: write
@@ -32,7 +32,7 @@ jobs:
         run: |
           dotnet build PulseIsland.sln -c Debug
 
-      - name: Run unit & integration tests (23 tests)
+      - name: Run unit & integration tests
         shell: pwsh
         run: |
           dotnet run --project tests\PulseIsland.Tests\PulseIsland.Tests.csproj --no-restore -c Release
@@ -43,7 +43,7 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:INPUT_TAG }
-          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = 'v1.0.0' }
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = 'v2.0.0' }
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           New-Item -ItemType Directory -Force -Path ".\release_out\portable",".\release_out\standalone",".\release_out\zips" | Out-Null

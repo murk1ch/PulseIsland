@@ -333,10 +333,18 @@ public partial class IslandWindow : Window
     private Point? _dragStartPoint;
     private string? _dragFilePath;
     private int _accordionAnimGen;
+    private bool _allowClose;
 
     public event Action? TranslationRequested;
     public event Action? SettingsRequested;
     public event Action? SmartClipboardRequested;
+    public event Action<string>? DropImageAskAiRequested;
+
+    public void ClosePermanently()
+    {
+        _allowClose = true;
+        Close();
+    }
 
     internal MouseBatteryService MouseBatteryService => _mouseBatteryService;
 
@@ -465,9 +473,11 @@ public partial class IslandWindow : Window
         _timelineTickTimer.Start();
 
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+        _vm.FilteredTranslationHistory.CollectionChanged += OnFilteredTranslationsChanged;
 
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
+        Closing += OnWindowClosing;
         Closed += OnClosed;
         StateChanged += OnWindowStateChanged;
         DpiChanged += (_, _) => PositionOnTargetMonitor();
@@ -591,7 +601,11 @@ public partial class IslandWindow : Window
         else if (e.PropertyName is nameof(IslandViewModel.HasDroppedFiles)
                  or nameof(IslandViewModel.IsFileDropZoneVisible)
                  or nameof(IslandViewModel.IsProgressBarVisible)
-                 or nameof(IslandViewModel.HasActiveNotification))
+                 or nameof(IslandViewModel.HasActiveNotification)
+                 or nameof(IslandViewModel.HasTranslationHistory)
+                 or nameof(IslandViewModel.HasNotificationHistory)
+                 or nameof(IslandViewModel.TranslationSearchQuery)
+                 or nameof(IslandViewModel.ShowEmptyTranslationSearchHint))
         {
             DropShelfEmptyHint.Visibility = _vm.HasDroppedFiles ? Visibility.Collapsed : Visibility.Visible;
             if (_vm.State == IslandState.Expanded)
@@ -616,9 +630,16 @@ public partial class IslandWindow : Window
         });
     }
 
-    private void OnLanguageChanged(AppLanguage language)
+    private void OnLanguageChanged(AppLanguage _)
     {
-        Dispatcher.InvokeAsync(() => _vm.RefreshLocalizedProperties());
+        Dispatcher.InvokeAsync(() =>
+        {
+            _vm.RefreshLocalizedProperties();
+            if (_vm.HasNotificationHistory)
+                OnPropertyChanged_NotifHistory();
+            if (_vm.State == IslandState.Expanded)
+                ApplyStateVisuals(animate: false, stateChanged: false);
+        });
     }
 
     private void OnAudioEndpointStateChanged(AudioEndpointState state, bool showHudToast)
@@ -637,7 +658,7 @@ public partial class IslandWindow : Window
                     ? LocalizationService.Pick("Mic muted", "Мик. выключен")
                     : LocalizationService.Pick("Mic active", "Мик. включён"))
                 : (state.IsSpeakerMuted
-                    ? LocalizationService.Pick("Muted", "Звук выключен")
+                    ? LocalizationService.Pick("Audio muted", "Звук выключен")
                     : LocalizationService.Pick($"Volume {state.MasterVolumePercent}%", $"Громкость {state.MasterVolumePercent}%"));
             _vm.VolumeHudFraction = micToggled
                 ? (state.IsMicMuted ? 0.0 : 1.0)
@@ -673,9 +694,32 @@ public partial class IslandWindow : Window
         _vm.IsNotificationsEnabled = _settingsService.Current.EnableIslandNotifications;
     }
 
+    private void OnWindowClosing(object? sender, CancelEventArgs e)
+    {
+        if (!_allowClose)
+        {
+            e.Cancel = true;
+            RestoreNoActivateStyle();
+            SetIslandState(IslandState.Compact, animate: true);
+        }
+    }
+
+    private void OnFilteredTranslationsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        if (_vm.State == IslandState.Expanded && _vm.IsTranslationSectionVisible)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+            {
+                if (_vm.State == IslandState.Expanded)
+                    ApplyStateVisuals(animate: true, stateChanged: false);
+            });
+        }
+    }
+
     private void OnClosed(object? sender, EventArgs e)
     {
         CompositionTarget.Rendering -= OnRenderFrame;
+        _vm.FilteredTranslationHistory.CollectionChanged -= OnFilteredTranslationsChanged;
         _systemMonitor.StatsUpdated -= OnSystemStatsUpdated;
         _systemMonitor.Dispose();
         _mouseBatteryService.BatteryUpdated -= OnMouseBatteryUpdated;
@@ -737,6 +781,9 @@ public partial class IslandWindow : Window
 
     public void SetIslandState(IslandState nextState, bool animate = true)
     {
+        if (nextState != IslandState.Expanded)
+            RestoreNoActivateStyle();
+
         bool stateChanged = _vm.State != nextState;
         _vm.State = nextState;
         ApplyStateVisuals(animate, stateChanged);
@@ -745,6 +792,27 @@ public partial class IslandWindow : Window
             RestartAutoHideTimer();
         else
             _autoHideTimer.Stop();
+    }
+
+    private void EnableInteractiveKeyboardFocus()
+    {
+        if (_ownHwnd == IntPtr.Zero) return;
+        int exStyle = Win32Api.GetWindowLong(_ownHwnd, Win32Api.GWL_EXSTYLE);
+        if ((exStyle & Win32Api.WS_EX_NOACTIVATE) != 0)
+        {
+            Win32Api.SetWindowLong(_ownHwnd, Win32Api.GWL_EXSTYLE, exStyle & ~Win32Api.WS_EX_NOACTIVATE);
+        }
+        try { Activate(); } catch { }
+    }
+
+    private void RestoreNoActivateStyle()
+    {
+        if (_ownHwnd == IntPtr.Zero) return;
+        int exStyle = Win32Api.GetWindowLong(_ownHwnd, Win32Api.GWL_EXSTYLE);
+        if ((exStyle & Win32Api.WS_EX_NOACTIVATE) == 0)
+        {
+            Win32Api.SetWindowLong(_ownHwnd, Win32Api.GWL_EXSTYLE, exStyle | Win32Api.WS_EX_NOACTIVATE);
+        }
     }
 
     private void ApplySettings(AppSettings settings)
@@ -758,6 +826,7 @@ public partial class IslandWindow : Window
         _vm.IsSmartClipboardEnabled = settings.EnableSmartClipboard;
         _vm.IsVolumeAndMicEnabled = settings.EnableVolumeAndMicIndicator;
         _vm.IsFileDropZoneEnabled = settings.EnableFileDropZone;
+        _vm.IsAiAssistantEnabled = settings.EnableLocalAiAssistant;
         _vm.ConfigureSystemIndicators(settings);
         if (!settings.EnableMouseBatteryIndicator)
         {
@@ -1306,9 +1375,14 @@ public partial class IslandWindow : Window
     {
         while (source is not null)
         {
-            if (source is Button)
+            if (source is System.Windows.Controls.Primitives.ButtonBase
+                or System.Windows.Controls.Primitives.TextBoxBase
+                or System.Windows.Controls.Primitives.Thumb
+                or System.Windows.Controls.Primitives.ScrollBar)
+            {
                 return true;
-            source = VisualTreeHelper.GetParent(source);
+            }
+            source = DwmBackdropService.GetParentSafe(source);
         }
         return false;
     }
@@ -1347,6 +1421,9 @@ public partial class IslandWindow : Window
     private void OnIslandMouseLeave(object sender, MouseEventArgs e)
     {
         _isPointerInside = false;
+        if (TranslationSearchBox?.IsKeyboardFocused == true)
+            return;
+
         if (_vm.State == IslandState.Expanded &&
             _settingsService.Current.ExpandOnHover &&
             _settingsService.Current.CollapseOnMouseLeave)
@@ -1405,6 +1482,33 @@ public partial class IslandWindow : Window
         SmartClipboardRequested?.Invoke();
     }
 
+    private void OnCycleAudioOutputClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (_audioEndpointMonitor is null)
+            return;
+
+        var (switched, fullName, shortName) = _audioEndpointMonitor.CycleDefaultRenderDevice();
+        if (switched)
+        {
+            string label = string.IsNullOrWhiteSpace(fullName) ? shortName : fullName;
+            string shortLabel = string.IsNullOrWhiteSpace(shortName) ? label : shortName;
+            _vm.StatusMessage = LocalizationService.Pick($"Audio output: {label}", $"Аудиовыход: {label}");
+            _vm.VolumeHudTitle = LocalizationService.Pick($"Output: {shortLabel}", $"Выход: {shortLabel}");
+            _vm.VolumeHudFraction = 1.0;
+            _vm.IsVolumeHudActive = true;
+            CompactVolumeFill.Width = 180.0;
+            _volumeHudTimer.Stop();
+            _volumeHudTimer.Start();
+        }
+        else
+        {
+            _vm.StatusMessage = LocalizationService.Pick(
+                "Only one active audio output is available",
+                "Доступен только один активный аудиовыход");
+        }
+    }
+
     private void OnToggleSpeakerMuteClick(object sender, RoutedEventArgs e)
     {
         e.Handled = true;
@@ -1415,6 +1519,50 @@ public partial class IslandWindow : Window
     {
         e.Handled = true;
         _audioEndpointMonitor?.ToggleMicMute();
+    }
+
+    private void OnTranslationSearchMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        EnableInteractiveKeyboardFocus();
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            TranslationSearchBox?.Focus();
+        });
+    }
+
+    private void OnTranslationSearchLostFocus(object sender, RoutedEventArgs e)
+    {
+        RestoreNoActivateStyle();
+        if (!_isPointerInside &&
+            _vm.State == IslandState.Expanded &&
+            _settingsService.Current.ExpandOnHover &&
+            _settingsService.Current.CollapseOnMouseLeave)
+        {
+            SetIslandState(IslandState.Compact);
+            RestartAutoHideTimer();
+        }
+    }
+
+    private void OnTranslationSearchKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            if (!string.IsNullOrEmpty(_vm.TranslationSearchQuery))
+            {
+                _vm.TranslationSearchQuery = string.Empty;
+            }
+            Keyboard.ClearFocus();
+            RestoreNoActivateStyle();
+        }
+    }
+
+    private void OnClearTranslationSearchClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        _vm.TranslationSearchQuery = string.Empty;
+        Keyboard.ClearFocus();
+        RestoreNoActivateStyle();
     }
 
     private async void OnTrackProgressSeekClick(object sender, MouseButtonEventArgs e)
@@ -1484,7 +1632,9 @@ public partial class IslandWindow : Window
                     bool isDir = System.IO.Directory.Exists(path);
                     string name = System.IO.Path.GetFileName(path.TrimEnd('\\', '/'));
                     if (string.IsNullOrWhiteSpace(name)) name = path;
-                    string sizeText = isDir ? LocalizationService.Pick("Folder", "Папка") : FormatFileSize(new System.IO.FileInfo(path).Length);
+                    string sizeText = isDir
+                        ? LocalizationService.Pick("Folder", "Папка")
+                        : FormatFileSize(new System.IO.FileInfo(path).Length);
                     items.Add(new DropShelfItem(path, name, sizeText, isDir));
                 }
                 catch { }
@@ -1511,6 +1661,13 @@ public partial class IslandWindow : Window
 
     private void OnDropItemMouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (IsClickInsideButton(e.OriginalSource as DependencyObject))
+        {
+            _dragStartPoint = null;
+            _dragFilePath = null;
+            return;
+        }
+
         if (sender is FrameworkElement { Tag: string path })
         {
             if (e.ClickCount == 2)
@@ -1526,6 +1683,117 @@ public partial class IslandWindow : Window
             _dragStartPoint = e.GetPosition(null);
             _dragFilePath = path;
         }
+    }
+
+    private void OnDropItemMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        _dragStartPoint = null;
+        _dragFilePath = null;
+    }
+
+    private void OnDropItemAskAiClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is FrameworkElement { Tag: string path } && System.IO.File.Exists(path))
+        {
+            DropImageAskAiRequested?.Invoke(path);
+        }
+    }
+
+    private async void OnDropItemConvertPngClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is Button btn && btn.Tag is string path && System.IO.File.Exists(path))
+        {
+            btn.IsEnabled = false;
+            try { await ConvertDroppedImageAsync(path, toPng: true); }
+            finally { btn.IsEnabled = true; }
+        }
+    }
+
+    private async void OnDropItemCompressJpgClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is Button btn && btn.Tag is string path && System.IO.File.Exists(path))
+        {
+            btn.IsEnabled = false;
+            try { await ConvertDroppedImageAsync(path, toPng: false); }
+            finally { btn.IsEnabled = true; }
+        }
+    }
+
+    private async Task ConvertDroppedImageAsync(string sourcePath, bool toPng)
+    {
+        try
+        {
+            string? outPath = await Task.Run(() =>
+            {
+                var region = ScreenCaptureService.LoadFromImageFile(sourcePath);
+                if (region is null)
+                    return null;
+
+                string dir = System.IO.Path.GetDirectoryName(sourcePath) ?? string.Empty;
+                string stem = System.IO.Path.GetFileNameWithoutExtension(sourcePath);
+                string ext = toPng ? ".png" : ".jpg";
+                string suffix = toPng ? "_png" : "_compressed";
+                string destPath = BuildUniqueSiblingPath(dir, stem + suffix, ext);
+
+                byte[] pixels = toPng
+                    ? region.Bgra32Pixels
+                    : ScreenCaptureService.CompositeBgraOverWhiteIfNeeded(region.Bgra32Pixels);
+
+                var bmp = System.Windows.Media.Imaging.BitmapSource.Create(
+                    region.Width,
+                    region.Height,
+                    96,
+                    96,
+                    PixelFormats.Bgra32,
+                    null,
+                    pixels,
+                    region.Width * 4);
+                bmp.Freeze();
+
+                System.Windows.Media.Imaging.BitmapEncoder encoder = toPng
+                    ? new System.Windows.Media.Imaging.PngBitmapEncoder()
+                    : new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 82 };
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+
+                using var outFs = new System.IO.FileStream(destPath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
+                encoder.Save(outFs);
+                return destPath;
+            });
+
+            if (!string.IsNullOrWhiteSpace(outPath) && System.IO.File.Exists(outPath))
+            {
+                string fileName = System.IO.Path.GetFileName(outPath);
+                string sizeText = FormatFileSize(new System.IO.FileInfo(outPath).Length);
+                _vm.AddDroppedFiles([new DropShelfItem(outPath, fileName, sizeText, false)]);
+                _vm.StatusMessage = toPng
+                    ? LocalizationService.Pick($"Saved as PNG: {fileName}", $"Сохранено в PNG: {fileName}")
+                    : LocalizationService.Pick($"Compressed to JPG: {fileName} ({sizeText})", $"Сжато в JPG: {fileName} ({sizeText})");
+            }
+            else
+            {
+                _vm.StatusMessage = LocalizationService.Pick("Failed to process image", "Не удалось обработать изображение");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn($"ConvertDroppedImageAsync error: {ex.Message}");
+            _vm.StatusMessage = LocalizationService.Pick("Image conversion error", "Ошибка конвертации изображения");
+        }
+    }
+
+    private static string BuildUniqueSiblingPath(string dir, string baseName, string ext)
+    {
+        string candidate = System.IO.Path.Combine(dir, baseName + ext);
+        int idx = 2;
+        while (System.IO.File.Exists(candidate))
+        {
+            candidate = System.IO.Path.Combine(dir, $"{baseName}_{idx}{ext}");
+            idx++;
+        }
+        return candidate;
     }
 
     private void OnDropItemMouseMove(object sender, MouseEventArgs e)
@@ -1551,7 +1819,10 @@ public partial class IslandWindow : Window
 
     private static string FormatFileSize(long bytes)
     {
-        return DiskSpaceSummaryDto.FormatBytes(bytes);
+        if (bytes < 1024) return $"{bytes} {LocalizationService.Pick("B", "Б")}";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:0.#} {LocalizationService.Pick("KB", "КБ")}";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024.0):0.#} {LocalizationService.Pick("MB", "МБ")}";
+        return $"{bytes / (1024.0 * 1024.0 * 1024.0):0.##} {LocalizationService.Pick("GB", "ГБ")}";
     }
 
     private void OnToggleMusicSectionClick(object sender, RoutedEventArgs e)
@@ -1585,9 +1856,7 @@ public partial class IslandWindow : Window
         if (sender is Button btn && btn.Tag is string text && !string.IsNullOrEmpty(text))
         {
             System.Windows.Clipboard.SetText(text);
-            _vm.StatusMessage = LocalizationService.Pick(
-                "Translation copied to clipboard",
-                "Перевод скопирован в буфер обмена");
+            _vm.StatusMessage = LocalizationService.Pick("Copied to clipboard", "Скопировано в буфер обмена");
         }
     }
 
@@ -1982,9 +2251,7 @@ public partial class IslandWindow : Window
 
     private void UpdateNotifCountBadge()
     {
-        if (NotifCountText is null) return;
-        int count = _vm.NotificationHistory.Count;
-        NotifCountText.Text = count > 99 ? "99+" : count.ToString();
+        // Bound via {Binding NotificationCountText} in XAML; avoid direct .Text overwrite which breaks the binding.
     }
 
     private void OnPropertyChanged_NotifHistory()
@@ -2037,7 +2304,7 @@ public partial class IslandWindow : Window
     private void StopAiThinkingAnimation()
     {
         OuterNeonAuraBorder.BeginAnimation(OpacityProperty, null);
-        OuterNeonAuraBorder.Opacity = 1.0;
+        OuterNeonAuraBorder.Opacity = 0.42;
         AiDot1Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         AiDot2Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         AiDot3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);

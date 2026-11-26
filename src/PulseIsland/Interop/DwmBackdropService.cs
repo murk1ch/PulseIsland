@@ -93,14 +93,41 @@ public static class DwmBackdropService
         }
     }
 
-    public static void ApplyToCard(Window window, Border? card, bool enable, double cornerRadiusDip, byte blurAlpha = 0x9C)
+    public static void ApplyToCard(Window window, Border? card, bool enable, double cornerRadiusDip, byte blurAlpha = 0xAC)
     {
         if (card is not null)
         {
-            if (enable && window.TryFindResource("ThemeSurfaceBrush") is SolidColorBrush surfaceBrush)
+            if (enable)
             {
-                var c = surfaceBrush.Color;
-                card.Background = new SolidColorBrush(Color.FromArgb(blurAlpha, c.R, c.G, c.B));
+                object? res = window.TryFindResource("ThemeSurfaceBrush");
+                if (res is SolidColorBrush surfaceBrush)
+                {
+                    var c = surfaceBrush.Color;
+                    var b = new SolidColorBrush(Color.FromArgb(blurAlpha, c.R, c.G, c.B));
+                    b.Freeze();
+                    card.Background = b;
+                }
+                else if (res is LinearGradientBrush gradBrush)
+                {
+                    var clone = new LinearGradientBrush
+                    {
+                        StartPoint = gradBrush.StartPoint,
+                        EndPoint = gradBrush.EndPoint,
+                        MappingMode = gradBrush.MappingMode
+                    };
+                    foreach (var stop in gradBrush.GradientStops)
+                    {
+                        var sc = stop.Color;
+                        byte a = (byte)Math.Min((int)sc.A, (int)blurAlpha);
+                        clone.GradientStops.Add(new GradientStop(Color.FromArgb(a, sc.R, sc.G, sc.B), stop.Offset));
+                    }
+                    clone.Freeze();
+                    card.Background = clone;
+                }
+                else
+                {
+                    card.SetResourceReference(Border.BackgroundProperty, "ThemeSurfaceBrush");
+                }
             }
             else
             {
@@ -109,6 +136,27 @@ public static class DwmBackdropService
         }
 
         ApplyToElement(window, card, enable, cornerRadiusDip);
+    }
+
+    /// <summary>
+    /// Safely walks up both WPF Visual/Visual3D and ContentElement (Run, Span, Paragraph, TableCell) trees
+    /// without throwing InvalidOperationException when OriginalSource is inside a FlowDocument / RichTextBox.
+    /// </summary>
+    public static DependencyObject? GetParentSafe(DependencyObject? dep)
+    {
+        if (dep is null)
+            return null;
+
+        if (dep is Visual or System.Windows.Media.Media3D.Visual3D)
+            return VisualTreeHelper.GetParent(dep);
+
+        if (dep is FrameworkContentElement fce)
+            return fce.Parent ?? ContentOperations.GetParent(fce);
+
+        if (dep is ContentElement ce)
+            return ContentOperations.GetParent(ce) ?? LogicalTreeHelper.GetParent(ce);
+
+        return LogicalTreeHelper.GetParent(dep);
     }
 
     private static void ApplyAccentPolicy(IntPtr hwnd, int accentState)

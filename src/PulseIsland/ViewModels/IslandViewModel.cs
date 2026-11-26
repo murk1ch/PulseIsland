@@ -44,9 +44,45 @@ public sealed class IslandViewModel : INotifyPropertyChanged
     private bool _isMouseBatteryEnabled;
     private bool _showMouseBatteryInCompact = true;
     private int _mouseLowBatteryThreshold = 15;
-    private MouseBatterySnapshot _lastMouseBattery = new(false, 0, false, string.Empty, "Auto");
+    private MouseBatterySnapshot _lastMouseBattery = new(false, 0, false, string.Empty, LocalizationService.Get("Loc_Auto"));
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public IslandViewModel()
+    {
+        LocalizationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    private void OnLanguageChanged(AppLanguage _)
+    {
+        RefreshLocalizedProperties();
+    }
+
+    public void RefreshLocalizedProperties()
+    {
+        var disp = System.Windows.Application.Current?.Dispatcher;
+        if (disp is not null && !disp.CheckAccess())
+        {
+            disp.BeginInvoke(RefreshLocalizedProperties);
+            return;
+        }
+
+        if (_aiBackendBadge is "Не скачана" or "Not downloaded")
+            AiBackendBadge = LocalizationService.Pick("Not downloaded", "Не скачана");
+        if (_aiStatusLine is "Готов (Qwen 2.5 3B)" or "Ready (Qwen 2.5 3B)")
+            AiStatusLine = LocalizationService.Pick("Ready (Qwen 2.5 3B)", "Готов (Qwen 2.5 3B)");
+
+        OnPropertyChanged(nameof(AudioOutputShortLabel));
+        OnPropertyChanged(nameof(AudioOutputTooltip));
+        OnPropertyChanged(nameof(CompactMicTooltip));
+        OnPropertyChanged(nameof(SpeakerLabel));
+        OnPropertyChanged(nameof(MicLabel));
+        OnPropertyChanged(nameof(MouseBatteryTooltip));
+        OnPropertyChanged(nameof(ExpandedTrackTitle));
+        OnPropertyChanged(nameof(ExpandedTrackArtist));
+        OnPropertyChanged(nameof(CompactHeaderText));
+        RebuildSystemIndicatorBadges();
+    }
 
     public IslandState State
     {
@@ -132,6 +168,8 @@ public sealed class IslandViewModel : INotifyPropertyChanged
             if (_isVolumeAndMicEnabled == value) return;
             _isVolumeAndMicEnabled = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(ShowCompactActiveMicPill));
+            OnPropertyChanged(nameof(CanSwitchAudioOutput));
         }
     }
 
@@ -175,19 +213,67 @@ public sealed class IslandViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(MicLabel));
             OnPropertyChanged(nameof(IsMicMuted));
             OnPropertyChanged(nameof(IsSpeakerMuted));
+            OnPropertyChanged(nameof(IsMicActivelyCapturing));
+            OnPropertyChanged(nameof(ShowCompactActiveMicPill));
+            OnPropertyChanged(nameof(CompactMicTooltip));
+            OnPropertyChanged(nameof(CanSwitchAudioOutput));
+            OnPropertyChanged(nameof(AudioOutputShortLabel));
+            OnPropertyChanged(nameof(AudioOutputTooltip));
         }
     }
 
     public bool IsSpeakerMuted => _audioState.IsSpeakerMuted;
     public bool IsMicMuted => _audioState.IsMicMuted;
+    public bool IsMicActivelyCapturing => _audioState.IsMicActivelyCapturing;
+    public bool ShowCompactActiveMicPill => _isVolumeAndMicEnabled && _audioState.HasMicDevice && _audioState.IsMicActivelyCapturing;
+    public bool CanSwitchAudioOutput => _isVolumeAndMicEnabled && _audioState.RenderDeviceCount >= 2;
+
+    public string AudioOutputShortLabel => string.IsNullOrWhiteSpace(_audioState.CurrentRenderShortName)
+        ? LocalizationService.Pick("Output", "Выход")
+        : _audioState.CurrentRenderShortName;
+
+    public string AudioOutputTooltip => string.IsNullOrWhiteSpace(_audioState.CurrentRenderFullName)
+        ? LocalizationService.Pick("Switch default audio output", "Переключить аудиовыход по умолчанию")
+        : LocalizationService.Pick(
+            $"Audio output: {_audioState.CurrentRenderFullName} (click to switch)",
+            $"Аудиовыход: {_audioState.CurrentRenderFullName} (нажмите, чтобы переключить)");
+
+    public string CompactMicTooltip
+    {
+        get
+        {
+            string app = string.IsNullOrWhiteSpace(_audioState.ActiveMicAppName)
+                ? LocalizationService.Pick("App", "Приложение")
+                : _audioState.ActiveMicAppName;
+            return _audioState.IsMicMuted
+                ? LocalizationService.Pick($"Microphone muted ({app}) — click to unmute", $"Микрофон выключен ({app}) — нажмите, чтобы включить")
+                : LocalizationService.Pick($"Microphone in use ({app}) — click to mute", $"Микрофон используется ({app}) — нажмите, чтобы выключить");
+        }
+    }
+
     public string SpeakerLabel => _audioState.IsSpeakerMuted
         ? LocalizationService.Pick("Muted", "Без звука")
         : $"{_audioState.MasterVolumePercent}%";
-    public string MicLabel => !_audioState.HasMicDevice
-        ? LocalizationService.Pick("Mic N/A", "Мик. н/д")
-        : (_audioState.IsMicMuted
-            ? LocalizationService.Pick("Mic off", "Мик. выкл")
-            : LocalizationService.Pick("Mic on", "Мик. вкл"));
+
+    public string MicLabel
+    {
+        get
+        {
+            if (!_audioState.HasMicDevice)
+                return LocalizationService.Pick("Mic N/A", "Мик. н/д");
+
+            if (_audioState.IsMicActivelyCapturing && !string.IsNullOrWhiteSpace(_audioState.ActiveMicAppName))
+            {
+                return _audioState.IsMicMuted
+                    ? LocalizationService.Pick($"Mic off • {_audioState.ActiveMicAppName}", $"Мик. выкл • {_audioState.ActiveMicAppName}")
+                    : LocalizationService.Pick($"Mic • {_audioState.ActiveMicAppName}", $"Мик. • {_audioState.ActiveMicAppName}");
+            }
+
+            return _audioState.IsMicMuted
+                ? LocalizationService.Pick("Mic off", "Мик. выкл")
+                : LocalizationService.Pick("Mic on", "Мик. вкл");
+        }
+    }
 
     public bool IsVolumeHudActive
     {
@@ -404,13 +490,13 @@ public sealed class IslandViewModel : INotifyPropertyChanged
 
             if (_lastMouseBattery.IsCharging && _lastMouseBattery.Percent <= 0)
                 return LocalizationService.Pick(
-                    $"{name} ({_lastMouseBattery.ConnectionLabel}): Charging via cable (exact % updates via 2.4 GHz after unplugging)",
+                    $"{name} ({_lastMouseBattery.ConnectionLabel}): Charging via cable (exact % updates over 2.4 GHz when unplugged)",
                     $"{name} ({_lastMouseBattery.ConnectionLabel}): Заряжается по кабелю (точный % обновится по 2.4 ГГц после отключения провода)");
 
-            string chgSuffix = _lastMouseBattery.IsCharging
+            string chargingSuffix = _lastMouseBattery.IsCharging
                 ? LocalizationService.Pick(" • Charging", " • Заряжается")
                 : string.Empty;
-            return $"{name} ({_lastMouseBattery.ConnectionLabel}): {_lastMouseBattery.Percent}%{chgSuffix}";
+            return $"{name} ({_lastMouseBattery.ConnectionLabel}): {_lastMouseBattery.Percent}%{chargingSuffix}";
         }
     }
 
@@ -469,9 +555,9 @@ public sealed class IslandViewModel : INotifyPropertyChanged
                 items.Add($"CPU {_lastSystemSnapshot.CpuPercent}%");
             if (_showRamInIsland)
             {
-                string gb = LocalizationService.Pick("GB", "ГБ");
+                string gbUnit = LocalizationService.Pick("GB", "ГБ");
                 string ram = _lastSystemSnapshot.TotalRamGb > 0.1
-                    ? $"RAM {_lastSystemSnapshot.RamPercent}% ({_lastSystemSnapshot.UsedRamGb:0.#}/{_lastSystemSnapshot.TotalRamGb:0.#} {gb})"
+                    ? $"RAM {_lastSystemSnapshot.RamPercent}% ({_lastSystemSnapshot.UsedRamGb:0.#}/{_lastSystemSnapshot.TotalRamGb:0.#} {gbUnit})"
                     : $"RAM {_lastSystemSnapshot.RamPercent}%";
                 items.Add(ram);
             }
@@ -482,11 +568,13 @@ public sealed class IslandViewModel : INotifyPropertyChanged
             if (_showBatteryInIsland)
             {
                 items.Add(_lastSystemSnapshot.HasBattery
-                    ? $"{LocalizationService.Pick("BAT", "АКБ")} {_lastSystemSnapshot.BatteryPercent}%{(_lastSystemSnapshot.IsCharging ? " ⚡" : string.Empty)}"
+                    ? LocalizationService.Pick(
+                        $"BAT {_lastSystemSnapshot.BatteryPercent}%{(_lastSystemSnapshot.IsCharging ? " (charging)" : string.Empty)}",
+                        $"АКБ {_lastSystemSnapshot.BatteryPercent}%{(_lastSystemSnapshot.IsCharging ? " (зарядка)" : string.Empty)}")
                     : LocalizationService.Pick("Power: AC", "Питание: Сеть"));
             }
             if (_showUptimeInIsland && !string.IsNullOrWhiteSpace(_lastSystemSnapshot.UptimeText))
-                items.Add($"{LocalizationService.Pick("Up", "Работа")}: {_lastSystemSnapshot.UptimeText}");
+                items.Add(LocalizationService.Pick($"Uptime: {_lastSystemSnapshot.UptimeText}", $"Работа: {_lastSystemSnapshot.UptimeText}"));
         }
 
         SystemIndicatorBadges.Clear();
@@ -651,7 +739,7 @@ public sealed class IslandViewModel : INotifyPropertyChanged
             if (_showRamInIsland) compactParts.Add($"RAM {_lastSystemSnapshot.RamPercent}%");
             if (_showTimeDateInIsland) compactParts.Add($"{DateTime.Now:HH:mm dd.MM}");
             if (_showNetworkSpeedInIsland) compactParts.Add($"↓{FormatSpeed(_lastSystemSnapshot.DownloadKBps)}");
-            if (_showBatteryInIsland && _lastSystemSnapshot.HasBattery) compactParts.Add($"{LocalizationService.Pick("BAT", "АКБ")} {_lastSystemSnapshot.BatteryPercent}%");
+            if (_showBatteryInIsland && _lastSystemSnapshot.HasBattery) compactParts.Add(LocalizationService.Pick($"BAT {_lastSystemSnapshot.BatteryPercent}%", $"АКБ {_lastSystemSnapshot.BatteryPercent}%"));
             if (_showUptimeInIsland && !string.IsNullOrWhiteSpace(_lastSystemSnapshot.UptimeText)) compactParts.Add(_lastSystemSnapshot.UptimeText);
 
             return compactParts.Count > 0
@@ -670,21 +758,32 @@ public sealed class IslandViewModel : INotifyPropertyChanged
             : _trackInfo.Artist)
         : LocalizationService.Pick("Play a track in your browser, Spotify, or media player", "Включите трек в браузере, Spotify или плеере");
 
-    public void RefreshLocalizedProperties()
-    {
-        RebuildSystemIndicatorBadges();
-        OnPropertyChanged(nameof(SpeakerLabel));
-        OnPropertyChanged(nameof(MicLabel));
-        OnPropertyChanged(nameof(MouseBatteryTooltip));
-        OnPropertyChanged(nameof(CompactHeaderText));
-        OnPropertyChanged(nameof(ExpandedTrackTitle));
-        OnPropertyChanged(nameof(ExpandedTrackArtist));
-    }
-
     public string PlayPauseGlyph => _trackInfo.IsPlaying ? "⏸" : "▶";
 
     public ObservableCollection<TranslationRecord> TranslationHistory { get; } = new();
+    public ObservableCollection<TranslationRecord> FilteredTranslationHistory { get; } = new();
     public ObservableCollection<DropShelfItem> DroppedFiles { get; } = new();
+
+    private string _translationSearchQuery = string.Empty;
+
+    public string TranslationSearchQuery
+    {
+        get => _translationSearchQuery;
+        set
+        {
+            string next = value ?? string.Empty;
+            if (string.Equals(_translationSearchQuery, next, StringComparison.Ordinal))
+                return;
+            _translationSearchQuery = next;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasTranslationSearchQuery));
+            RefreshFilteredTranslations();
+        }
+    }
+
+    public bool HasTranslationSearchQuery => !string.IsNullOrWhiteSpace(_translationSearchQuery);
+    public bool HasTranslationHistory => TranslationHistory.Count > 0;
+    public bool ShowEmptyTranslationSearchHint => TranslationHistory.Count > 0 && FilteredTranslationHistory.Count == 0;
 
     public bool HasDroppedFiles => DroppedFiles.Count > 0;
 
@@ -694,6 +793,7 @@ public sealed class IslandViewModel : INotifyPropertyChanged
         TranslationHistory.Clear();
         foreach (var item in items)
             TranslationHistory.Add(item);
+        RefreshFilteredTranslations();
     }
 
     public void AddTranslation(TranslationRecord record)
@@ -704,12 +804,33 @@ public sealed class IslandViewModel : INotifyPropertyChanged
             TranslationHistory.RemoveAt(TranslationHistory.Count - 1);
         }
         TranslationHistoryService.Save(TranslationHistory);
+        RefreshFilteredTranslations();
     }
 
     public void ClearTranslations()
     {
         TranslationHistory.Clear();
         TranslationHistoryService.Save(TranslationHistory);
+        RefreshFilteredTranslations();
+    }
+
+    private void RefreshFilteredTranslations()
+    {
+        string q = _translationSearchQuery.Trim();
+        FilteredTranslationHistory.Clear();
+        foreach (var item in TranslationHistory)
+        {
+            if (string.IsNullOrEmpty(q) ||
+                (item.SourceText?.Contains(q, StringComparison.OrdinalIgnoreCase) == true) ||
+                (item.TranslatedText?.Contains(q, StringComparison.OrdinalIgnoreCase) == true) ||
+                (item.DetectedSourceLanguage?.Contains(q, StringComparison.OrdinalIgnoreCase) == true) ||
+                (item.TargetLanguage?.Contains(q, StringComparison.OrdinalIgnoreCase) == true))
+            {
+                FilteredTranslationHistory.Add(item);
+            }
+        }
+        OnPropertyChanged(nameof(HasTranslationHistory));
+        OnPropertyChanged(nameof(ShowEmptyTranslationSearchHint));
     }
 
     public void AddDroppedFiles(IEnumerable<DropShelfItem> items)

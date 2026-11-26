@@ -339,6 +339,122 @@ internal static class OrtNativeRuntime
         }
     }
 
+    /// <summary>
+    /// General-purpose single-model float32 ONNX session wrapper (used by PP-OCRv5 DBNet detector & SVTR recognizers).
+    /// Zero NuGet dependencies; runs natively on PortablePaths.ModelsDirectory\_runtime\onnxruntime.dll.
+    /// </summary>
+    public sealed class OrtFloatSession : IDisposable
+    {
+        private readonly OrtApiDelegates _api;
+        private readonly IntPtr _env;
+        private readonly IntPtr _memInfo;
+        private readonly IntPtr _session;
+        private readonly object _runLock = new();
+        private bool _disposed;
+
+        public OrtFloatSession(string modelPath, int threads = 0)
+        {
+            _api = EnsureApiLoaded();
+            CheckStatus(_api, _api.CreateEnv(ORT_LOGGING_LEVEL_ERROR, "PulseIslandOcr", out _env));
+            CheckStatus(_api, _api.CreateCpuMemoryInfo(ORT_ARENA_ALLOCATOR, ORT_MEM_TYPE_DEFAULT, out _memInfo));
+
+            CheckStatus(_api, _api.CreateSessionOptions(out IntPtr opts));
+            try
+            {
+                _api.SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
+                int numThreads = threads > 0 ? threads : Math.Clamp(Environment.ProcessorCount / 2, 2, 6);
+                _api.SetIntraOpNumThreads(opts, numThreads);
+                CheckStatus(_api, _api.CreateSession(_env, modelPath, opts, out _session));
+            }
+            finally
+            {
+                if (opts != IntPtr.Zero) _api.ReleaseSessionOptions(opts);
+            }
+        }
+
+        public (float[] Data, long[] Shape) RunFloat(
+            float[] inputData,
+            long[] inputShape,
+            string inputName = "x",
+            string outputName = "fetch_name_0")
+        {
+            lock (_runLock)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(OrtFloatSession));
+
+                var hInput = GCHandle.Alloc(inputData, GCHandleType.Pinned);
+                IntPtr inputTensor = IntPtr.Zero;
+                IntPtr pInName = Marshal.StringToCoTaskMemUTF8(inputName);
+                IntPtr pOutName = Marshal.StringToCoTaskMemUTF8(outputName);
+                IntPtr[] outputs = [IntPtr.Zero];
+                IntPtr shapeInfo = IntPtr.Zero;
+
+                try
+                {
+                    CheckStatus(_api, _api.CreateTensorWithDataAsOrtValue(
+                        _memInfo,
+                        hInput.AddrOfPinnedObject(),
+                        (UIntPtr)(inputData.Length * sizeof(float)),
+                        inputShape,
+                        (UIntPtr)inputShape.Length,
+                        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+                        out inputTensor));
+
+                    IntPtr[] inNames = [pInName];
+                    IntPtr[] inValues = [inputTensor];
+                    IntPtr[] outNames = [pOutName];
+
+                    CheckStatus(_api, _api.Run(
+                        _session,
+                        IntPtr.Zero,
+                        inNames,
+                        inValues,
+                        (UIntPtr)1,
+                        outNames,
+                        (UIntPtr)1,
+                        outputs));
+
+                    CheckStatus(_api, _api.GetTensorTypeAndShape(outputs[0], out shapeInfo));
+                    CheckStatus(_api, _api.GetDimensionsCount(shapeInfo, out UIntPtr dimCount));
+                    long[] outShape = new long[(int)dimCount];
+                    CheckStatus(_api, _api.GetDimensions(shapeInfo, outShape, dimCount));
+
+                    long totalElements = 1;
+                    for (int d = 0; d < outShape.Length; d++)
+                        totalElements *= Math.Max(1, outShape[d]);
+
+                    CheckStatus(_api, _api.GetTensorMutableData(outputs[0], out IntPtr rawData));
+                    float[] result = new float[totalElements];
+                    Marshal.Copy(rawData, result, 0, (int)totalElements);
+
+                    return (result, outShape);
+                }
+                finally
+                {
+                    if (shapeInfo != IntPtr.Zero) _api.ReleaseTensorTypeAndShapeInfo(shapeInfo);
+                    if (outputs[0] != IntPtr.Zero) _api.ReleaseValue(outputs[0]);
+                    if (inputTensor != IntPtr.Zero) _api.ReleaseValue(inputTensor);
+                    if (hInput.IsAllocated) hInput.Free();
+                    Marshal.FreeCoTaskMem(pInName);
+                    Marshal.FreeCoTaskMem(pOutName);
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_runLock)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                if (_session != IntPtr.Zero) _api.ReleaseSession(_session);
+                if (_memInfo != IntPtr.Zero) _api.ReleaseMemoryInfo(_memInfo);
+                if (_env != IntPtr.Zero) _api.ReleaseEnv(_env);
+            }
+        }
+    }
+
     private static void CheckStatus(OrtApiDelegates api, IntPtr status)
     {
         if (status == IntPtr.Zero)

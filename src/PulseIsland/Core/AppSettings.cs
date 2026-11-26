@@ -4,6 +4,7 @@ public sealed class AppSettings
 {
     // --- General & Interface ---
     public AppLanguage UiLanguage { get; set; } = AppLanguage.English;
+    public bool HasCompletedOnboarding { get; set; } = false;
     public AppThemeStyle ThemeStyle { get; set; } = AppThemeStyle.Classic;
     public bool AutoStartWithWindows { get; set; } = false;
     public int MonitorIndex { get; set; } = 0; // 0 = Primary monitor
@@ -59,9 +60,47 @@ public sealed class AppSettings
     public bool EnableAiFeedHotkey { get; set; } = true;
     public string AiFeedHotkeyGesture { get; set; } = "Ctrl+Alt+A";
     public AiFeedHotkeyAction AiFeedAction { get; set; } = AiFeedHotkeyAction.Summarize;
+    public List<CustomAiPromptChip> CustomAiPrompts { get; set; } = GetDefaultCustomAiPrompts(AppLanguage.English);
+
+    public static List<CustomAiPromptChip> GetDefaultCustomAiPrompts(AppLanguage language = AppLanguage.English) =>
+        language == AppLanguage.Russian
+            ?
+            [
+                new("Простыми словами", "Объясни это максимально простыми словами и по пунктам."),
+                new("Исправь ошибки", "Исправь грамматические и стилистические ошибки, сохранив естественный тон:"),
+                new("Деловой ответ", "Составь вежливый, краткий и уверенный деловой ответ на это сообщение:"),
+                new("Разбери код", "Разбери этот код или ошибку, объясни причину и покажи исправленный вариант:")
+            ]
+            :
+            [
+                new("In simple words", "Explain this as simply and clearly as possible with bullet points."),
+                new("Fix grammar", "Fix grammar and style mistakes while keeping a natural tone:"),
+                new("Formal reply", "Write a polite, concise, and confident professional reply to this message:"),
+                new("Explain code", "Analyze this code or error, explain the root cause, and show the fixed version:")
+            ];
+
+    public static bool IsBuiltInDefaultPromptSet(IReadOnlyList<CustomAiPromptChip>? prompts)
+    {
+        if (prompts is null || prompts.Count == 0) return true;
+        return SequenceMatches(prompts, GetDefaultCustomAiPrompts(AppLanguage.English)) ||
+               SequenceMatches(prompts, GetDefaultCustomAiPrompts(AppLanguage.Russian));
+    }
+
+    private static bool SequenceMatches(IReadOnlyList<CustomAiPromptChip> a, IReadOnlyList<CustomAiPromptChip> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (!string.Equals(a[i].Title, b[i].Title, StringComparison.Ordinal) ||
+                !string.Equals(a[i].PromptTemplate, b[i].PromptTemplate, StringComparison.Ordinal))
+                return false;
+        }
+        return true;
+    }
 
     // --- Translator ---
     public TranslationEngineMode TranslationMode { get; set; } = TranslationEngineMode.OnlineWindowsOcr;
+    public OcrEngineMode OcrMode { get; set; } = OcrEngineMode.AutoSmart;
     public OnlineTranslationProvider OnlineProvider { get; set; } = OnlineTranslationProvider.GoogleFree;
     public string TargetLanguage { get; set; } = "en";
     public bool AutoDetectSourceLanguage { get; set; } = true;

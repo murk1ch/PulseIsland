@@ -124,7 +124,7 @@ public sealed class HuggingFaceDownloader : IDisposable
         if (drive.AvailableFreeSpace < requiredAdditionalBytes.Value + 100L * 1024 * 1024)
         {
             throw new IOException(LocalizationService.Pick(
-                $"Not enough free disk space on drive {drive.Name} to download the model.",
+                $"Not enough free space on drive {drive.Name} to download the model.",
                 $"Недостаточно свободного места на диске {drive.Name} для загрузки модели."));
         }
     }

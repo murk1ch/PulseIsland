@@ -3,7 +3,7 @@ using System.IO;
 namespace PulseIsland.Core;
 
 /// <summary>
-/// Resolves all application paths strictly inside the portable root directory (<portable-root>).
+/// Resolves all application paths strictly inside the portable root directory (&lt;portable-root&gt;).
 /// Never writes to C:\Users\...\AppData, LocalAppData, Documents, or %TEMP%.
 /// </summary>
 public static class PortablePaths

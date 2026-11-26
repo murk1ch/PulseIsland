@@ -16,11 +16,11 @@ public sealed class OnlineTranslationService : IDisposable
         var handler = new SocketsHttpHandler
         {
             UseProxy = true,
-            ConnectTimeout = TimeSpan.FromSeconds(4)
+            ConnectTimeout = TimeSpan.FromSeconds(2.2)
         };
         _httpClient = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(8)
+            Timeout = TimeSpan.FromSeconds(4.0)
         };
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
     }
@@ -32,7 +32,7 @@ public sealed class OnlineTranslationService : IDisposable
         bool allowBuiltInDictionaryFallback = true)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return new TranslationResult(false, string.Empty, "und", settings.TargetLanguage, false, "Empty text.");
+            return new TranslationResult(false, string.Empty, "und", settings.TargetLanguage, false, LocalizationService.Pick("Empty text.", "Пустой текст."));
 
         string sourceLang = settings.AutoDetectSourceLanguage ? "auto" : settings.ManualSourceLanguage;
         string targetLang = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "ru" : settings.TargetLanguage;
@@ -49,13 +49,25 @@ public sealed class OnlineTranslationService : IDisposable
             LogService.Warn("DeepL provider unavailable or API key empty. Falling back to Google/MyMemory/Local.");
         }
 
-        var googleResult = await TranslateViaGoogleFreeAsync(text, sourceLang, targetLang, ct);
-        if (googleResult.Success)
-            return googleResult;
+        // Race Google Free & MyMemory in parallel (Google preferred; worst-case wait <= ~4s instead of 24s sequential!)
+        using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var googleTask = TranslateViaGoogleFreeAsync(text, sourceLang, targetLang, raceCts.Token);
+        var myMemoryTask = TranslateViaMyMemoryWithDelayAsync(text, sourceLang, targetLang, delayMs: 700, raceCts.Token);
 
-        var myMemoryResult = await TranslateViaMyMemoryAsync(text, sourceLang, targetLang, ct);
-        if (myMemoryResult.Success)
-            return myMemoryResult;
+        var firstCompleted = await Task.WhenAny(googleTask, myMemoryTask);
+        var firstResult = await firstCompleted;
+        if (firstResult.Success)
+        {
+            raceCts.Cancel();
+            return firstResult;
+        }
+
+        var secondTask = firstCompleted == googleTask ? myMemoryTask : googleTask;
+        var secondResult = await secondTask;
+        if (secondResult.Success)
+            return secondResult;
+
+        var googleResult = await googleTask;
 
         if (!allowBuiltInDictionaryFallback)
         {
@@ -74,6 +86,25 @@ public sealed class OnlineTranslationService : IDisposable
         return BuiltInLocalTranslator.Translate(text, sourceLang, targetLang);
     }
 
+    private async Task<TranslationResult> TranslateViaMyMemoryWithDelayAsync(
+        string text,
+        string sourceLang,
+        string targetLang,
+        int delayMs,
+        CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(delayMs, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return new TranslationResult(false, string.Empty, sourceLang, targetLang, false);
+        }
+
+        return await TranslateViaMyMemoryAsync(text, sourceLang, targetLang, ct);
+    }
+
     private async Task<TranslationResult> TranslateViaGoogleFreeAsync(
         string text,
         string sourceLang,
@@ -86,53 +117,80 @@ public sealed class OnlineTranslationService : IDisposable
             "https://clients5.google.com/translate_a/single?client=at&dt=t"
         };
 
-        foreach (var endpoint in endpoints)
+        using var endpointCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var tasks = endpoints.Select(ep => QuerySingleGoogleEndpointAsync(ep, text, sourceLang, targetLang, endpointCts.Token)).ToList();
+
+        while (tasks.Count > 0)
         {
-            try
+            var finished = await Task.WhenAny(tasks);
+            tasks.Remove(finished);
+            var res = await finished;
+            if (res.Success)
             {
-                using var content = new FormUrlEncodedContent(new Dictionary<string, string>
-                {
-                    ["sl"] = sourceLang,
-                    ["tl"] = targetLang,
-                    ["q"] = text
-                });
-                using var response = await _httpClient.PostAsync(endpoint, content, ct);
-                if (!response.IsSuccessStatusCode)
-                    continue;
-
-                string json = await response.Content.ReadAsStringAsync(ct);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-
-                var sb = new StringBuilder();
-                if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0 && root[0].ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var segment in root[0].EnumerateArray())
-                    {
-                        if (segment.ValueKind == JsonValueKind.Array && segment.GetArrayLength() > 0)
-                        {
-                            sb.Append(segment[0].GetString());
-                        }
-                    }
-                }
-
-                string detectedLang = sourceLang;
-                if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 2 && root[2].ValueKind == JsonValueKind.String)
-                {
-                    detectedLang = root[2].GetString() ?? sourceLang;
-                }
-
-                var translated = sb.ToString().Trim();
-                if (!string.IsNullOrEmpty(translated))
-                    return new TranslationResult(true, translated, detectedLang, targetLang, false);
-            }
-            catch (Exception ex)
-            {
-                LogService.Warn($"Google translation endpoint {endpoint} failed: {ex.Message}");
+                endpointCts.Cancel();
+                return res;
             }
         }
 
-        return new TranslationResult(false, string.Empty, sourceLang, targetLang, false, "Google endpoints unreachable.");
+        return new TranslationResult(false, string.Empty, sourceLang, targetLang, false,
+            LocalizationService.Pick("Google translation endpoints unreachable.", "Серверы Google Translate недоступны."));
+    }
+
+    private async Task<TranslationResult> QuerySingleGoogleEndpointAsync(
+        string endpoint,
+        string text,
+        string sourceLang,
+        string targetLang,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["sl"] = sourceLang,
+                ["tl"] = targetLang,
+                ["q"] = text
+            });
+            using var response = await _httpClient.PostAsync(endpoint, content, ct);
+            if (!response.IsSuccessStatusCode)
+                return new TranslationResult(false, string.Empty, sourceLang, targetLang, false);
+
+            string json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var sb = new StringBuilder();
+            if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0 && root[0].ValueKind == JsonValueKind.Array)
+            {
+                foreach (var segment in root[0].EnumerateArray())
+                {
+                    if (segment.ValueKind == JsonValueKind.Array && segment.GetArrayLength() > 0)
+                    {
+                        sb.Append(segment[0].GetString());
+                    }
+                }
+            }
+
+            string detectedLang = sourceLang;
+            if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 2 && root[2].ValueKind == JsonValueKind.String)
+            {
+                detectedLang = root[2].GetString() ?? sourceLang;
+            }
+
+            var translated = sb.ToString().Trim();
+            if (!string.IsNullOrEmpty(translated))
+                return new TranslationResult(true, translated, detectedLang, targetLang, false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled because a sibling endpoint won the race
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn($"Google translation endpoint {endpoint} failed: {ex.Message}");
+        }
+
+        return new TranslationResult(false, string.Empty, sourceLang, targetLang, false);
     }
 
     private async Task<TranslationResult> TranslateViaMyMemoryAsync(

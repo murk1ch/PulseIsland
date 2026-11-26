@@ -1,40 +1,45 @@
 ---
 name: pulseisland-settings-and-testing
 description: >-
-  Guide for PulseIsland configuration DTOs, language/model catalogs, Windows
-  autostart registry integration, tabbed SettingsWindow UI, and the dual-mode
-  xUnit/offline test suite in tests\PulseIsland.Tests.
+  Guide for PulseIsland v2.0.0 configuration DTOs, language/OCR/AI/Whisper model catalogs,
+  Windows autostart registry integration, async tabbed SettingsWindow UI, onboarding wizard,
+  and the 36-test dual-mode xUnit/offline test suite in tests\PulseIsland.Tests.
 ---
 
-# PulseIsland Settings, Catalogs & Testing Skill
+# PulseIsland Settings, Catalogs & Testing Skill (v2.0.0)
 
-## 1. Catalogs & DTOs (`Core/CatalogModels.cs`)
+## 1. Settings & Catalogs (`Core/AppSettings.cs`, `Core/CatalogModels.cs`)
+- `AppSettings` key v2.0 properties:
+  - `UiLanguage` (`AppLanguage.English` default, live EN ⇄ RU), `HasCompletedOnboarding`, `ThemeStyle` (7 themes), `EnableDwmBackdropBlur`.
+  - `TranslationMode` (`OnlineWindowsOcr`, `OfflineOnnx`, `OfflineLocalLlm`), `OcrMode` (`AutoSmart`, `VisionLlmAlways`, `WindowsOcrOnly`), `OnlineProvider` (`GoogleFree`, `DeepL`), `EncryptedDeepLApiKey`.
+  - `SelectedAiModelId` (`qwen2.5-3b-instruct` default), `AiBackend` (`Auto`, `GpuVulkan`, `CpuOnly`), `CustomAiPrompts` (up to 8 `CustomAiPromptChip` items, with `GetDefaultCustomAiPrompts(lang)` and `IsBuiltInDefaultPromptSet(...)` for automatic EN/RU switching of untouched defaults).
+  - Mouse battery (`EnableMouseBatteryIndicator`, `MouseConnectionMode`, `ShowMouseBatteryInCompact`, low-battery threshold & chime).
 - `LanguageCatalog.SupportedLanguages`: 16 `LanguageOption` entries with `FindOrDefault(code, fallback)` region-subtag normalization (`en-US` → `en`).
-- `DiskSpaceSummaryDto.FormatBytes(long bytes)`: **always** use `{mb:0.#}` and `{gb:0.##}` (never `0.1` or `0.2`, because in .NET custom numeric format strings `1` and `2` are literal characters appended to the number!).
-- `OfflineModelCatalogEntry`, `OfflineModelStatusDto`, `AudioDeviceOptionDto`: immutable DTOs for UI binding.
+- `DiskSpaceSummaryDto.FormatBytes(long bytes)`: **always** use `{mb:0.#}` and `{gb:0.##}` (never `0.1` or `0.2`, which append literal digits in .NET custom format strings).
 
-## 2. Offline Model Manager & Autostart (`Services/`)
-- `OfflineModelCatalogService`:
-  - Built-in catalog: `opus-mt-en-ru`, `opus-mt-ru-en`, `opus-mt-de-ru`, `opus-mt-mul-en` (all include `encoder_model.onnx`, `decoder_model.onnx`, `source.spm`, `vocab.json`, `config.json`, `tokenizer_config.json`).
-  - Skips `_`-prefixed folders (e.g. `_runtime`) when scanning `models\`.
-  - Distinguishes `HasCoreModelWeights` (`encoder_model.onnx` + `decoder_model.onnx`) from `IsModelDirectoryComplete` (all 5 required files including `vocab.json` + `config.json`).
-  - `DownloadModelPackageAsync` skips files already present on disk (`Length > 0`), ensures `OrtNativeRuntime`, and reads `config.json` token IDs into `pulseisland_manifest.json`.
-- `AutoStartService`:
-  - Reads/writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (`PulseIsland`) pointing strictly to the running `PulseIsland.exe` path without `.lnk` shortcuts in system user directories (`AppData`, `LocalAppData`, `%Temp%`).
+## 2. Model Managers & Autostart (`Services/`, `Translation/`)
+- **Zero Auto-Downloads Rule:** None of the model managers download files automatically on startup; all downloads require explicit user action in Settings and stage `.part` files in `PortablePaths.DownloadsCacheDirectory`.
+- `OfflineModelCatalogService`: MarianMT packs (`opus-mt-en-ru`, `opus-mt-ru-en`, `opus-mt-de-ru`, `opus-mt-mul-en`), skips `_`-prefixed folders (`_runtime`, `_ocr`, `_llama`, `_whisper`), checks `HasCoreModelWeights` vs `IsModelDirectoryComplete`.
+- `PaddleOcrOnnxService`: PP-OCRv5 Mobile ONNX models in `models\_ocr\` (`ppocrv5_det.onnx`, `ppocrv5_eslav_rec.onnx`, `ppocrv5_en_rec.onnx`, YAML dicts) using `models\_runtime\onnxruntime.dll`.
+- `LocalLlmCatalogService`: Multi-model GGUF catalog (Qwen 2.5 3B/7B, Qwen 3 4B, Gemma 2 9B, Vision VLMs Qwen 2.5 VL 3B & 7B + `--mmproj`) + portable `llama-server.exe` in `models\_llama\`.
+- `WhisperVoiceService`: Portable `whisper.cpp` (`whisper-cli.exe` + `ggml-base.bin`) in `models\_whisper\`.
+- `AutoStartService`: Manages `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (`PulseIsland`) pointing to the active `PulseIsland.exe` with zero system `%AppData%` shortcuts.
 
-## 3. Tabbed Settings Window (`UI/SettingsWindow.xaml(.cs)`)
-- **Three tabs:** General & Interface, Translator & Models, Music & Waves.
-- **Footer Layout:** Uses a 2-column `Grid` (`Width="*"` for `FooterStatusText` with `TextTrimming="CharacterEllipsis"`, `Width="Auto"` for Cancel and Save buttons) so status text never overlaps buttons.
-- **Live Language Selector (`UiLanguageCombo`):** Located at the top of Tab 1 (`AppSettings.UiLanguage`, defaults to `AppLanguage.English`). Changing the combo applies live preview via `LocalizationService.ApplyLanguage(...)` and refreshes dynamic labels; Cancel reverts to the previously saved language, and Save persists it to `settings.json`.
-- **Auto-collapse Island:** Opening Settings from `App.xaml.cs` collapses `IslandWindow` from `Expanded` to `Compact`.
-- **Model Manager UX:** Includes Open folder (opens `PortablePaths.ModelsDirectory` in Explorer), Refresh list, and a clear `MessageBox` on socket/network errors (`WSAEACCES 10013`) listing manual Hugging Face download steps.
-- **Themes, Smart Widgets & Mouse Battery:** 7 themes (`ThemeService`) with live preview bar, toggles for DWM glass blur, progress bar, album glow, smart clipboard, volume/mic indicator, file drop shelf, system indicators, and a collapsible `MouseBatteryDetailsPanel` (`MouseConnectionMode`, compact visibility, low-battery threshold & sound preset test).
-- **Root Project Guides:** Always keep `<project-root>\AGENT.md` and `<project-root>\GOAL.md` aligned with architecture and build/test workflows.
+## 3. Tabbed Settings Window & Onboarding (`UI/SettingsWindow.xaml(.cs)`, `UI/WelcomeOnboardingWindow.xaml(.cs)`)
+- **Non-Blocking Startup (`OnWindowLoaded`):** Keep heavy COM audio enumeration, GPU/Vulkan detection, and recursive `models\` disk scanning off the constructor/UI thread; run asynchronously in `Loaded` (`OnWindowLoaded`) and marshal UI updates via `Dispatcher`.
+- **Three Tabs + Guide Button:** General & Interface, Translator & AI (OCR, ONNX, Local AI/Vision, Whisper, up to 8 editable custom prompt chips with in-box placeholders), and Music & Waves. Clicking **Guide** (`OnOpenOnboardingGuideClick`) reopens the 3-step `WelcomeOnboardingWindow`.
+- **Responsive EN/RU Layout:** Use 2-column `Grid` (`*` + `TextTrimming="CharacterEllipsis"` / `Auto`) and `WrapPanel` for headers, footers, and button strips so neither English nor longer Russian strings ever overlap.
+- **Live Language & Theme Preview:** Changing `UiLanguageCombo` or themes previews immediately; Cancel reverts cleanly, Save persists to `config\settings.json`. Opening Settings from `App.xaml.cs` auto-collapses an `Expanded` island to `Compact`.
 
-## 4. Dual-Mode Test Suite (`tests/PulseIsland.Tests/`)
-- **Offline mode (`FullSdk=false`, default):** Console test runner using `TestFrameworkShim.cs`:
+## 4. Dual-Mode Automated Test Suite (`tests/PulseIsland.Tests/`)
+- **Offline default (`FullSdk=false`):** Runs via `TestFrameworkShim.cs` (discovers all `[Fact]` methods by reflection):
   ```powershell
-  $env:TEMP = "<project-root>\cache\temp"; $env:TMP = "<project-root>\cache\temp"
+  New-Item -ItemType Directory -Force -Path ".\cache\temp" | Out-Null
+  $env:TEMP = (Resolve-Path ".\cache\temp").Path; $env:TMP = $env:TEMP
   dotnet run --project tests\PulseIsland.Tests\PulseIsland.Tests.csproj --no-restore -c Release
   ```
-- **Test Coverage (23 tests):** `LassoGeometryTests`, `SecurityHelperTests`, `PortablePathsAndSettingsTests` (including `SentencePieceAndOrtNativeRuntime_WorkZeroDependency`, `ThemeService_ContainsAllSevenRequestedThemes`, `IslandViewModel_NotificationPushAndDismiss_UpdatesHistoryAndActiveNotification`, `IslandViewModel_FileDropZoneVisible_OnlyWhenDraggingOrHasFiles`, `NotificationFormattingAndSounds_DetectMediaTypesChatTargetsAndGenerateWav`, `WeatherAndLocalLlmCatalog_ParseWeatherAndBuildPromptsCleanly`, `IslandViewModel_MouseBattery_UpdatesCompactVisibilityAndSamplesSafely`, and `LocalizationService_DefaultsToEnglishAndSwitchesToRussianCleanly`), and `FftAndHotkeyTests`.
+- **36 Portable Tests (`PulseIslandTests.cs`):** Zero hardcoded drives or developer folders; passes identically locally and on fresh CI clones. Covers:
+  - Lasso geometry (`ComputeBoundingBox` + shrinkable `ComputeRectangleBox`), DPAPI encryption, `PortablePaths` isolation, `SettingsService` round-trip, `LanguageCatalog`, `HotkeyService`, `FftSpectrumProcessor`, and WASAPI capture lifecycle.
+  - `LocalizationService` EN/RU 100% key parity & live switching, `AppSettings` `UiLanguage` & built-in bilingual prompt chip detection, `ThemeService` (7 themes), and `IslandViewModel` (Settings button visibility, notifications, drop shelf, Live Activities mic/output, live translation search, mouse battery).
+  - `WindowsOcrService` (English, diverse fonts/themes, Cyrillic vs Latin scoring, `°C` & zero-alpha clipboard bitmap normalization) and `PaddleOcrOnnxService` (cursive/handwriting, degrees, math, all fonts).
+  - `OfflineModelCatalogService`, `SentencePieceMarianTokenizer` + `OrtNativeRuntime`, `LocalLlmCatalogService` multi-model & Vision VLM/`--mmproj` + in-memory JPEG encoding (zero auto-download), `AiResponseFormatter` (LaTeX/Markdown/Tables), `WhisperVoiceService`, multi-turn AI chat, `SmartClipboardService` image history dedup + Drop Shelf quick actions, and `MouseBatteryService` Compx/ATK/VXE/Lamzu/Pulsar protocol packet builders/parsers.

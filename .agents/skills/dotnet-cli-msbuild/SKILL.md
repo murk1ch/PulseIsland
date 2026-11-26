@@ -2,37 +2,57 @@
 name: dotnet-cli-msbuild
 description: >-
   Use this skill when creating, configuring, building, publishing, or debugging
-  .NET 8+ / WPF solutions and projects using dotnet CLI and MSBuild, especially
-  for self-contained portable builds in <project-root>.
+  .NET 8 / WPF solutions and projects using dotnet CLI and MSBuild, including
+  zero-NuGet offline builds and portable or standalone win-x64 releases.
 ---
 
 # Dotnet CLI & MSBuild Skill
 
-## Core Principles
-- Target `.NET 8+` (`net8.0-windows10.0.19041.0` or newer) with `<UseWPF>true</UseWPF>` when WinRT APIs (SMTC, Windows OCR) are needed.
-- Keep all intermediate (`BaseIntermediateOutputPath`), output (`OutputPath`), and publish artifacts inside `<project-root>` — never rely on user-profile paths in system user directories (`AppData`, `LocalAppData`, `%Temp%`).
+## Project Configuration (`src\PulseIsland\PulseIsland.csproj`)
+- **Dual-Mode TFM (`FullSdk`):**
+  - Default (`FullSdk=false`): targets `net8.0-windows` with **zero external NuGet packages** (native Win32/COM/OrtApi/WPF).
+  - Full SDK (`-p:FullSdk=true`): targets `net8.0-windows10.0.19041.0` and defines `WITH_WINRT;WITH_ONNX`.
+- **Portable Restore & Cache Isolation:**
+  - `Directory.Build.props` sets `<RestorePackagesPath>$(MSBuildThisFileDirectory).nuget\packages</RestorePackagesPath>`.
+  - `nuget.config` pins `globalPackagesFolder` and `repositoryPath` to `.\.nuget\packages`.
+- **WPF + WinForms Coexistence:** `<UseWPF>true</UseWPF>` and `<UseWindowsForms>true</UseWindowsForms>` with `<Using Remove="System.Drawing" />` and `<Using Remove="System.Windows.Forms" />` to prevent type collisions (`Color`, `Brush`, `Point`, `Application`).
+- **DPI & Targeting:** `<ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>` and `<EnableWindowsTargeting>true</EnableWindowsTargeting>`.
+
+## Portable Environment Setup (Run from `<project-root>`)
+```powershell
+New-Item -ItemType Directory -Force -Path ".\cache\temp" | Out-Null
+$env:TEMP = (Resolve-Path ".\cache\temp").Path
+$env:TMP  = $env:TEMP
+```
 
 ## Common Commands
-1. **Create solution and WPF app:**
+1. **Build & Run (Debug, zero-NuGet default):**
    ```powershell
-   dotnet new sln -n PulseIsland
-   dotnet new wpf -n PulseIsland -f net8.0-windows
-   dotnet sln add PulseIsland/PulseIsland.csproj
+   dotnet build PulseIsland.sln -c Debug
+   dotnet run --project src\PulseIsland\PulseIsland.csproj
    ```
-2. **Build & Run (Debug):**
+2. **Run Tests (Release, zero-NuGet runner):**
    ```powershell
-   dotnet build -c Debug
-   dotnet run --project PulseIsland/PulseIsland.csproj
+   dotnet run --project tests\PulseIsland.Tests\PulseIsland.Tests.csproj --no-restore -c Release
    ```
-3. **Portable Self-Contained Publish:**
+3. **Local Portable Publish (`dist\`):**
    ```powershell
-   dotnet publish PulseIsland/PulseIsland.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o <project-root>\publish
+   dotnet publish src\PulseIsland\PulseIsland.csproj --no-restore -c Release -o dist
    ```
-   *(Avoid `PublishSingleFile=true` if native DLLs like `onnxruntime.dll` or WinRT interop require side-by-side loading unless `IncludeNativeLibrariesForSelfExtract` is explicitly tested without extracting to `C:\Users\...\AppData\Local\Temp\.net`!)*
+4. **GitHub Actions Release Artifacts (`.github\workflows\release.yml`):**
+   - **Portable (framework-dependent, requires .NET 8 Desktop Runtime):**
+     ```powershell
+     dotnet publish src\PulseIsland\PulseIsland.csproj --no-restore -c Release -o .\release_out\portable
+     ```
+   - **Standalone (self-contained single-file `win-x64`, zero .NET install required):**
+     ```powershell
+     dotnet publish src\PulseIsland\PulseIsland.csproj -c Release -r win-x64 --self-contained true `
+       -p:PublishSingleFile=true `
+       -p:IncludeNativeLibrariesForSelfExtract=true `
+       -p:EnableCompressionInSingleFile=true `
+       -o .\release_out\standalone
+     ```
 
-## Critical Portable Check
-- **IMPORTANT:** `.NET` single-file extraction (`DOTNET_BUNDLE_EXTRACT_BASE_DIR`) defaults to `%TEMP%` in system user directories (`AppData`, `LocalAppData`, `%Temp%`). Either publish **non-single-file** self-contained or set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to `<project-root>\cache\dotnet`.
-- Enable `<EnableWindowsTargeting>true</EnableWindowsTargeting>` if building on non-standard environments.
-
-## Verification
-- Run `dotnet build --no-restore` and verify exit code `0` and zero warnings on nullable/WinRT TFMs.
+## Portable Isolation Check
+- `.NET` single-file self-extraction defaults `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to `%TEMP%`. When testing strict portable isolation with a single-file standalone build, set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to `<portable-root>\cache\dotnet` or use the non-single-file portable publish.
+- Always verify `dotnet build` exits with code `0` and zero nullable or Win32/COM warnings.

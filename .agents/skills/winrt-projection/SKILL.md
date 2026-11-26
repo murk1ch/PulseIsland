@@ -1,32 +1,28 @@
 ---
 name: winrt-projection
 description: >-
-  Use this skill when integrating Windows Runtime (WinRT) APIs in .NET 8 WPF,
-  specifically System Media Transport Controls (SMTC) for music playback/metadata
-  and Windows.Media.Ocr for local text recognition.
+  Use this skill when integrating Windows Runtime (WinRT) APIs in .NET 8 WPF
+  for PulseIsland, covering both direct FullSdk=true WinRT projections (SMTC,
+  Windows.Media.Ocr) and FullSdk=false zero-NuGet fallback bridges.
 ---
 
-# Windows Runtime (WinRT) Projection Skill
+# Windows Runtime (WinRT) Projection & Dual-Mode Bridge Skill
 
-## Project Configuration
-To access WinRT APIs cleanly in .NET 8 WPF, set the TargetFramework in `.csproj`:
-```xml
-<TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
-```
+## Project Configuration (`src\PulseIsland\PulseIsland.csproj`)
+PulseIsland supports two build modes so the repository compiles cleanly both offline and with full WinRT projections:
+- **Full SDK (`-p:FullSdk=true`):** Sets `<TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>` and defines `WITH_WINRT` for direct CsWinRT API calls.
+- **Default Offline (`FullSdk=false`):** Targets `net8.0-windows` without `WITH_WINRT`, using built-in zero-NuGet fallback bridges (`#if !WITH_WINRT`).
 
-## 1. System Media Transport Controls (SMTC)
-- Namespace: `Windows.Media.Control`
-- Entry point: `await GlobalSystemMediaTransportControlsSessionManager.RequestAsync()`
-- Subscribe to:
-  - `CurrentSessionChanged` (when user switches active player/browser tab)
-  - `MediaPropertiesChanged` (track title, artist, album thumbnail `IRandomAccessStreamReference`)
-  - `PlaybackInfoChanged` (Playing / Paused / Stopped)
-- Controls: `await session.TryTogglePlayPauseAsync()`, `TrySkipNextAsync()`, `TrySkipPreviousAsync()`.
-- **Important:** WinRT events fire on background threads. Always marshal UI updates via `Dispatcher.InvokeAsync(...)` and dispose `IRandomAccessStreamWithContentType` after reading the thumbnail into a frozen `BitmapImage`.
+## 1. System Media Transport Controls (`Media/SmtcMediaService.cs`)
+- **Direct WinRT (`#if WITH_WINRT`):**
+  - `Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager.RequestAsync()`.
+  - Subscribe to `CurrentSessionChanged`, `MediaPropertiesChanged` (title, artist, album thumbnail `IRandomAccessStreamReference`), and `PlaybackInfoChanged`.
+  - Invoke `TryTogglePlayPauseAsync()`, `TrySkipNextAsync()`, and `TrySkipPreviousAsync()`.
+- **Thread & Resource Rules:** WinRT events fire on background threads. Always marshal WPF UI updates via `Dispatcher.InvokeAsync(...)`, freeze decoded `BitmapImage` thumbnails, and dispose `IRandomAccessStreamWithContentType`.
 
-## 2. Windows OCR (`Windows.Media.Ocr`)
-- Namespace: `Windows.Media.Ocr`, `Windows.Graphics.Imaging`
-- Create engine: `OcrEngine.TryCreateFromUserProfileLanguages()` or `OcrEngine.TryCreateFromLanguage(new Language(langTag))`.
-- Convert captured `System.Drawing.Bitmap` / `byte[]` BGRA8 into `SoftwareBitmap` (`BitmapPixelFormat.Bgra8`, `BitmapAlphaMode.Premultiplied`).
-- Call `await engine.RecognizeAsync(softwareBitmap)` and join `result.Lines` with spaces/newlines.
-- Handle the case where a language pack is not installed on Windows (fallback to multi-language attempt or inform the user).
+## 2. Windows OCR (`Translation/WindowsOcrService.cs`)
+- **Direct WinRT (`#if WITH_WINRT`):**
+  - Uses `Windows.Media.Ocr.OcrEngine` (`TryCreateFromUserProfileLanguages` / `TryCreateFromLanguage`) and `Windows.Graphics.Imaging.SoftwareBitmap` (`Bgra8`, `Premultiplied`).
+- **Default Zero-NuGet Bridge (`#if !WITH_WINRT`):**
+  - Runs a persistent resident WinRT OCR worker (`WarmUpAsync` / `RecognizeViaResidentBridgeAsync`) so cold startup latency is eliminated while keeping zero NuGet dependencies.
+- **Preprocessing & Fallback:** Both modes feed multi-pass preprocessed PNG variants from `OcrImagePreprocessor.BuildVariants`, apply script/plausibility-aware consensus voting, and pair with `PaddleOcrOnnxService` (PP-OCRv5 Mobile ONNX) when installed for cursive, handwriting, math, and multi-script text.

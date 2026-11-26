@@ -1,7 +1,10 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using PulseIsland.Core;
 using PulseIsland.Interop;
 using PulseIsland.Services;
@@ -11,10 +14,14 @@ namespace PulseIsland.UI;
 public partial class SmartClipboardWindow : Window
 {
     private sealed record ClipboardItemVm(string Id, string Text, string PreviewText, string MetaText, string PinLabel);
+    private sealed record ClipboardImageVm(string Id, BitmapSource Thumbnail, string TitleText, string MetaText);
 
     private readonly SmartClipboardService _clipboardService;
     private readonly SettingsService _settingsService;
     private bool _pinnedOnly;
+    private bool _isClosing;
+
+    public event Action<CapturedScreenRegion>? SendImageToAiRequested;
 
     public SmartClipboardWindow(SmartClipboardService clipboardService, SettingsService settingsService)
     {
@@ -39,6 +46,7 @@ public partial class SmartClipboardWindow : Window
             FilterPinnedBtn.Content = _pinnedOnly
                 ? LocalizationService.Get("Loc_Clip_AllItems")
                 : LocalizationService.Get("Loc_Clip_Pinned");
+            StatusFooterText.Text = LocalizationService.Get("Loc_Clip_FooterHint");
             RefreshList();
         });
     }
@@ -69,15 +77,74 @@ public partial class SmartClipboardWindow : Window
 
     private void RefreshList()
     {
-        var items = _clipboardService.Search(SearchBox.Text, _pinnedOnly);
+        string query = SearchBox.Text ?? string.Empty;
+        var items = _clipboardService.Search(query, _pinnedOnly);
+        string charsUnit = LocalizationService.Pick("chars", "симв.");
+        string pinnedSuffix = LocalizationService.Pick("   •   Pinned", "   •   Закреплено");
+        string pinText = LocalizationService.Pick("Pin", "Закрепить");
+        string unpinText = LocalizationService.Pick("Unpin", "Открепить");
         EntriesItemsControl.ItemsSource = items.Select(e => new ClipboardItemVm(
             Id: e.Id,
             Text: e.Text,
             PreviewText: e.Text.Replace("\r\n", " ").Replace('\n', ' ').Trim(),
-            MetaText: $"{e.Timestamp:HH:mm:ss  •  dd.MM}   •   {e.Text.Length} {LocalizationService.Pick("chars", "симв.")}{(e.IsPinned ? LocalizationService.Pick("   •   Pinned", "   •   Закреплено") : string.Empty)}",
-            PinLabel: e.IsPinned ? LocalizationService.Pick("Unpin", "Открепить") : LocalizationService.Pick("Pin", "Закрепить"))).ToList();
+            MetaText: $"{e.Timestamp:HH:mm:ss  •  dd.MM}   •   {e.Text.Length} {charsUnit}{(e.IsPinned ? pinnedSuffix : string.Empty)}",
+            PinLabel: e.IsPinned ? unpinText : pinText)).ToList();
 
-        CountBadgeText.Text = items.Count.ToString();
+        bool showImages = !_pinnedOnly && string.IsNullOrWhiteSpace(query);
+        var images = showImages ? _clipboardService.GetImageSnapshot() : Array.Empty<ClipboardImageEntry>();
+        var imageVms = new List<ClipboardImageVm>(images.Count);
+        string screenshotLabel = LocalizationService.Pick("Screenshot", "Скриншот");
+        string inRamLabel = LocalizationService.Pick("In RAM", "В ОЗУ");
+        foreach (var img in images)
+        {
+            var thumb = CreateFrozenThumbnail(img);
+            if (thumb is not null)
+            {
+                imageVms.Add(new ClipboardImageVm(
+                    Id: img.Id,
+                    Thumbnail: thumb,
+                    TitleText: $"{screenshotLabel} • {img.Width} × {img.Height}",
+                    MetaText: $"{img.Timestamp:HH:mm:ss  •  dd.MM}   •   {inRamLabel}"));
+            }
+        }
+
+        ImageEntriesItemsControl.ItemsSource = imageVms;
+        ImagesSectionPanel.Visibility = imageVms.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ImagesHeaderText.Text = LocalizationService.Pick(
+            $"SCREENSHOTS & PHOTOS ({imageVms.Count})",
+            $"СКРИНШОТЫ И ФОТО ({imageVms.Count})");
+        CountBadgeText.Text = (items.Count + imageVms.Count).ToString();
+    }
+
+    private static BitmapSource? CreateFrozenThumbnail(ClipboardImageEntry entry)
+    {
+        try
+        {
+            var bmp = BitmapSource.Create(
+                entry.Width,
+                entry.Height,
+                96.0,
+                96.0,
+                PixelFormats.Bgra32,
+                null,
+                entry.Bgra32Pixels,
+                entry.Width * 4);
+
+            if (entry.Width > 180 || entry.Height > 120)
+            {
+                double scale = Math.Min(180.0 / entry.Width, 120.0 / entry.Height);
+                var scaled = new TransformedBitmap(bmp, new ScaleTransform(scale, scale));
+                scaled.Freeze();
+                return scaled;
+            }
+
+            bmp.Freeze();
+            return bmp;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void OnSearchTextChanged(object sender, TextChangedEventArgs e)
@@ -125,18 +192,54 @@ public partial class SmartClipboardWindow : Window
             _clipboardService.Remove(id);
     }
 
+    private void OnCopyImageClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string id } && _clipboardService.CopyImageToClipboard(id))
+        {
+            StatusFooterText.Text = LocalizationService.Pick("Image copied to clipboard!", "Изображение скопировано в буфер обмена!");
+        }
+    }
+
+    private void OnAskAiImageClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string id } && _clipboardService.TryGetImageRegion(id, out var region) && region is not null)
+        {
+            SendImageToAiRequested?.Invoke(region);
+            CloseWithAnimation();
+        }
+    }
+
+    private void OnDeleteImageClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string id })
+            _clipboardService.RemoveImage(id);
+    }
+
     private void OnClearUnpinnedClick(object sender, RoutedEventArgs e)
     {
         _clipboardService.ClearUnpinned();
-        StatusFooterText.Text = LocalizationService.Pick("Unpinned entries cleared.", "Незакреплённые записи очищены.");
+        StatusFooterText.Text = LocalizationService.Pick(
+            "Unpinned entries and snapshots cleared.",
+            "Незакреплённые записи и снимки очищены.");
     }
 
     private void OnWindowMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.LeftButton == MouseButtonState.Pressed && e.OriginalSource is not System.Windows.Controls.Primitives.TextBoxBase)
+        if (e.LeftButton == MouseButtonState.Pressed && !IsInsideInteractive(e.OriginalSource as DependencyObject))
         {
             try { DragMove(); } catch { }
         }
+    }
+
+    private static bool IsInsideInteractive(DependencyObject? source)
+    {
+        while (source is not null)
+        {
+            if (source is ButtonBase or TextBoxBase or Thumb or ScrollBar)
+                return true;
+            source = DwmBackdropService.GetParentSafe(source);
+        }
+        return false;
     }
 
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
@@ -149,6 +252,8 @@ public partial class SmartClipboardWindow : Window
 
     private void CloseWithAnimation()
     {
+        if (_isClosing) return;
+        _isClosing = true;
         var dur = TimeSpan.FromMilliseconds(160);
         var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
         var fade = new DoubleAnimation(1.0, 0.0, dur) { EasingFunction = ease };

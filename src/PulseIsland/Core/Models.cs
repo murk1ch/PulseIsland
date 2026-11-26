@@ -1,6 +1,14 @@
+using System.IO;
 using System.Windows.Media;
+using PulseIsland.Services;
 
 namespace PulseIsland.Core;
+
+public enum AppLanguage
+{
+    English,
+    Russian
+}
 
 public enum IslandState
 {
@@ -12,7 +20,15 @@ public enum IslandState
 public enum TranslationEngineMode
 {
     OnlineWindowsOcr,
-    OfflineOnnx
+    OfflineOnnx,
+    OfflineLocalLlm
+}
+
+public enum OcrEngineMode
+{
+    AutoSmart,
+    VisionLlmAlways,
+    WindowsOcrOnly
 }
 
 public enum OnlineTranslationProvider
@@ -68,7 +84,24 @@ public sealed record DropShelfItem(
     string FilePath,
     string FileName,
     string SizeDisplay,
-    bool IsDirectory);
+    bool IsDirectory)
+{
+    public bool IsImageFile => !IsDirectory && HasImageExtension(FilePath);
+    public bool CanConvertToPng => IsImageFile && !string.Equals(Path.GetExtension(FilePath), ".png", StringComparison.OrdinalIgnoreCase);
+    public bool CanCompressToJpg => IsImageFile;
+
+    private static bool HasImageExtension(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string ext = Path.GetExtension(path);
+        return ext.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".gif", StringComparison.OrdinalIgnoreCase);
+    }
+}
 
 public sealed record TranslationRecord(
     string SourceText,
@@ -127,12 +160,6 @@ public enum AiFeedHotkeyAction
     FillPrompt
 }
 
-public enum AppLanguage
-{
-    English,
-    Russian
-}
-
 public enum MouseConnectionMode
 {
     Auto,
@@ -179,11 +206,29 @@ public sealed record IslandNotification(
         get
         {
             var diff = DateTime.Now - Timestamp;
-            if (diff.TotalSeconds < 10) return Services.LocalizationService.Pick("just now", "только что");
-            if (diff.TotalMinutes < 1) return Services.LocalizationService.Pick($"{(int)diff.TotalSeconds}s ago", $"{(int)diff.TotalSeconds} сек назад");
-            if (diff.TotalHours < 1) return Services.LocalizationService.Pick($"{(int)diff.TotalMinutes}m ago", $"{(int)diff.TotalMinutes} мин назад");
-            if (diff.TotalDays < 1) return Services.LocalizationService.Pick($"{(int)diff.TotalHours}h ago", $"{(int)diff.TotalHours} ч назад");
+            if (diff.TotalSeconds < 10) return LocalizationService.Pick("just now", "только что");
+            if (diff.TotalMinutes < 1) return LocalizationService.Pick($"{(int)diff.TotalSeconds}s ago", $"{(int)diff.TotalSeconds} сек назад");
+            if (diff.TotalHours < 1) return LocalizationService.Pick($"{(int)diff.TotalMinutes}m ago", $"{(int)diff.TotalMinutes} мин назад");
+            if (diff.TotalDays < 1) return LocalizationService.Pick($"{(int)diff.TotalHours}h ago", $"{(int)diff.TotalHours} ч назад");
             return Timestamp.ToString("dd.MM HH:mm");
         }
     }
 }
+
+public sealed record CustomAiPromptChip(
+    string Title,
+    string PromptTemplate);
+
+public sealed record AiChatTurn(
+    string Role,
+    string Content,
+    byte[]? ImageJpegBytes = null);
+
+public sealed record ClipboardImageEntry(
+    string Id,
+    int Width,
+    int Height,
+    DateTime Timestamp,
+    byte[] Bgra32Pixels,
+    ulong PixelHash,
+    bool IsPinned = false);

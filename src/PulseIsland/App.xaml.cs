@@ -44,8 +44,10 @@ public partial class App : System.Windows.Application
     private SettingsWindow? _settingsWindow;
     private SmartClipboardWindow? _clipboardWindow;
     private WinForms.NotifyIcon? _trayIcon;
+    private LassoOverlayWindow? _activeLassoOverlay;
     private bool _isCapturingSelection;
     private bool _isTranslatingClipboard;
+    private bool _isFeedingAi;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -115,10 +117,12 @@ public partial class App : System.Windows.Application
 
             _mediaService = new SmtcMediaService(() => _audioCapture.IsSilent);
 
+            _localLlmService = new LocalLlmService();
             var ocrService = new WindowsOcrService();
             var onlineService = new OnlineTranslationService();
             var offlineService = new OnnxOfflineTranslationService();
-            _translationCoordinator = new TranslationCoordinator(ocrService, onlineService, offlineService, _settingsService);
+            _translationCoordinator = new TranslationCoordinator(ocrService, onlineService, offlineService, _settingsService, _localLlmService);
+            _ = ocrService.WarmUpAsync();
 
             _islandViewModel = new IslandViewModel();
             _islandViewModel.LoadPersistedTranslations();
@@ -133,11 +137,30 @@ public partial class App : System.Windows.Application
             _islandWindow.TranslationRequested += () => _ = StartLassoTranslationAsync();
             _islandWindow.SettingsRequested += OpenSettingsWindow;
             _islandWindow.SmartClipboardRequested += OpenSmartClipboardWindow;
+            _islandWindow.DropImageAskAiRequested += OpenImageFileInAiPopup;
 
             MainWindow = _islandWindow;
             _translationPopup = new TranslationPopupWindow();
-            _localLlmService = new LocalLlmService();
             _aiPopup = new AiAssistantPopupWindow(_settingsService, _localLlmService, _islandViewModel);
+            _translationPopup.AskAiRequested += (sourceText, capturedRegion, physRect, dipRect) =>
+            {
+                _aiPopup.ShowWithContextForQuestion(sourceText, physRect, dipRect, capturedRegion);
+            };
+            _translationPopup.SwapTranslateAsync += async (text, srcLang, tgtLang) =>
+            {
+                var res = await _translationCoordinator.TranslateTextExplicitAsync(text, srcLang, tgtLang);
+                if (res.Success && !string.IsNullOrWhiteSpace(res.TranslatedText))
+                {
+                    _islandViewModel.AddTranslation(new TranslationRecord(
+                        SourceText: text,
+                        TranslatedText: res.TranslatedText,
+                        DetectedSourceLanguage: string.IsNullOrWhiteSpace(res.DetectedSourceLanguage) ? srcLang : res.DetectedSourceLanguage,
+                        TargetLanguage: string.IsNullOrWhiteSpace(res.TargetLanguage) ? tgtLang : res.TargetLanguage,
+                        Timestamp: DateTime.Now,
+                        IsOffline: res.UsedOfflineModel));
+                }
+                return res;
+            };
 
             _hotkeyService = new HotkeyService();
             _hotkeyService.Attach(_islandWindow);
@@ -154,7 +177,7 @@ public partial class App : System.Windows.Application
             _hotkeyService.AiFeedHotkeyPressed += () => _ = StartAiFeedFromSelectionAsync();
 
             _settingsService.SettingsChanged += OnSettingsChanged;
-            LocalizationService.LanguageChanged += _ => Dispatcher.InvokeAsync(RebuildTrayMenu);
+            LocalizationService.LanguageChanged += OnLanguageChanged;
 
             SetupTrayIcon(settings.ShowTrayIcon);
             _islandWindow.Show();
@@ -162,6 +185,19 @@ public partial class App : System.Windows.Application
 
             // Start media session polling after window is visible so nothing can delay startup
             _ = _mediaService.StartAsync();
+
+            if (!settings.HasCompletedOnboarding)
+            {
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, () =>
+                {
+                    if (_settingsService is not null && !_settingsService.Current.HasCompletedOnboarding)
+                    {
+                        var welcome = new WelcomeOnboardingWindow(_settingsService);
+                        welcome.Show();
+                        welcome.Activate();
+                    }
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -252,6 +288,11 @@ public partial class App : System.Windows.Application
         }, token);
     }
 
+    private void OnLanguageChanged(AppLanguage _)
+    {
+        Dispatcher.InvokeAsync(RebuildTrayMenu);
+    }
+
     private void OnSettingsChanged(AppSettings settings)
     {
         Dispatcher.InvokeAsync(() =>
@@ -286,44 +327,88 @@ public partial class App : System.Windows.Application
 
     private async Task StartLassoTranslationAsync()
     {
-        if (_isCapturingSelection || _settingsService is null || _translationCoordinator is null || _islandViewModel is null)
+        if (_isCapturingSelection)
+        {
+            // Pressing Alt+Q a second time cleanly cancels the active lasso overlay
+            _activeLassoOverlay?.CancelFromExternal();
+            return;
+        }
+
+        if (_settingsService is null || _translationCoordinator is null || _islandViewModel is null)
             return;
 
         _isCapturingSelection = true;
         try
         {
             _islandWindow?.SetTemporaryCaptureHide(true);
+            if (_translationPopup is not null && _translationPopup.IsVisible)
+                _translationPopup.Hide();
 
             var overlay = new LassoOverlayWindow(_settingsService.Current);
+            _activeLassoOverlay = overlay;
             var selection = await overlay.CaptureSelectionAsync();
+            _activeLassoOverlay = null;
+
+            if (selection is null)
+            {
+                _islandWindow?.SetTemporaryCaptureHide(false);
+                return;
+            }
+
+            // Capture BOTH the exact selected area and a slightly expanded fallback area
+            // BEFORE unhiding the island so top-edge text is never occluded by PulseIsland itself!
+            var physRect = selection.PhysicalRect;
+            var primaryRegion = ScreenCaptureService.CaptureRegion(physRect);
+
+            if (selection.Intent == LassoCaptureIntent.AskAiAboutImage)
+            {
+                _islandWindow?.SetTemporaryCaptureHide(false);
+                if (primaryRegion is null)
+                {
+                    _islandViewModel.StatusMessage = LocalizationService.Pick(
+                        "Failed to capture screen region.",
+                        "Не удалось захватить область экрана.");
+                    return;
+                }
+
+                _aiPopup?.ShowWithImageForQuestion(primaryRegion, sourceText: null, physRect, selection.DipRect);
+                return;
+            }
+
+            var vsBounds = MonitorService.GetVirtualScreenPhysicalBounds();
+            var expandedRect = LassoGeometryHelper.ExpandRectClamped(physRect, vsBounds, expandX: 18, expandY: 28);
+            var expandedRegion = expandedRect != physRect
+                ? ScreenCaptureService.CaptureRegion(expandedRect)
+                : null;
 
             _islandWindow?.SetTemporaryCaptureHide(false);
 
-            if (selection is null)
+            if (primaryRegion is null)
+            {
+                _islandViewModel.StatusMessage = LocalizationService.Pick(
+                    "Failed to capture screen region.",
+                    "Не удалось захватить область экрана.");
                 return;
+            }
 
             _islandViewModel.IsTranslating = true;
             _islandViewModel.StatusMessage = LocalizationService.Pick(
                 "Recognizing and translating text...",
                 "Распознавание и перевод текста...");
 
-            var (ocr, translation) = await _translationCoordinator.CaptureOcrAndTranslateAsync(selection.Value.PhysicalRect);
+            var (ocr, translation) = await _translationCoordinator.OcrAndTranslateRegionAsync(primaryRegion, expandedRegion);
 
             _islandViewModel.IsTranslating = false;
 
             if (!translation.Success)
             {
                 string errorMsg = translation.ErrorMessage ?? LocalizationService.Pick(
-                    "Failed to recognize or translate text.",
-                    "Не удалось распознать или перевести текст.");
+                    "Could not recognize text. Click \"Ask AI\" to analyze the photo.",
+                    "Не удалось распознать текст. Нажмите «Спросить ИИ», чтобы проанализировать изображение.");
                 _islandViewModel.StatusMessage = errorMsg;
 
                 var failedRecord = new TranslationRecord(
-                    SourceText: string.IsNullOrWhiteSpace(ocr.Text)
-                        ? LocalizationService.Pick(
-                            "No text detected in selected area (try circling the entire line)",
-                            "Текст в выделенной области не обнаружен (попробуйте обвести строку целиком)")
-                        : ocr.Text,
+                    SourceText: ocr.Text,
                     TranslatedText: errorMsg,
                     DetectedSourceLanguage: string.IsNullOrWhiteSpace(ocr.DetectedLanguageTag) ? "ocr" : ocr.DetectedLanguageTag,
                     TargetLanguage: _settingsService.Current.TargetLanguage,
@@ -332,10 +417,13 @@ public partial class App : System.Windows.Application
 
                 _translationPopup?.ShowTranslation(
                     failedRecord,
-                    selection.Value.PhysicalRect,
-                    selection.Value.DipRect,
+                    selection.PhysicalRect,
+                    selection.DipRect,
                     Math.Max(6, _settingsService.Current.TranslationPopupAutoHideSeconds),
-                    _settingsService.Current.EnableDwmBackdropBlur);
+                    _settingsService.Current.EnableDwmBackdropBlur,
+                    primaryRegion,
+                    isError: true,
+                    allowAiButton: _settingsService.Current.EnableLocalAiAssistant);
                 return;
             }
 
@@ -351,10 +439,13 @@ public partial class App : System.Windows.Application
             _islandViewModel.AddTranslation(record);
             _translationPopup?.ShowTranslation(
                 record,
-                selection.Value.PhysicalRect,
-                selection.Value.DipRect,
+                selection.PhysicalRect,
+                selection.DipRect,
                 _settingsService.Current.TranslationPopupAutoHideSeconds,
-                _settingsService.Current.EnableDwmBackdropBlur);
+                _settingsService.Current.EnableDwmBackdropBlur,
+                primaryRegion,
+                isError: false,
+                allowAiButton: _settingsService.Current.EnableLocalAiAssistant);
         }
         catch (Exception ex)
         {
@@ -369,6 +460,7 @@ public partial class App : System.Windows.Application
         }
         finally
         {
+            _activeLassoOverlay = null;
             _islandWindow?.SetTemporaryCaptureHide(false);
             if (_islandViewModel is not null)
                 _islandViewModel.IsTranslating = false;
@@ -426,7 +518,14 @@ public partial class App : System.Windows.Application
                     translation.TargetLanguage,
                     DateTime.Now,
                     translation.UsedOfflineModel);
-                _translationPopup?.ShowTranslation(failRec, physRect, dipRect, 8, _settingsService.Current.EnableDwmBackdropBlur);
+                _translationPopup?.ShowTranslation(
+                    failRec,
+                    physRect,
+                    dipRect,
+                    8,
+                    _settingsService.Current.EnableDwmBackdropBlur,
+                    isError: true,
+                    allowAiButton: _settingsService.Current.EnableLocalAiAssistant);
                 return;
             }
 
@@ -444,7 +543,9 @@ public partial class App : System.Windows.Application
                 physRect,
                 dipRect,
                 _settingsService.Current.TranslationPopupAutoHideSeconds,
-                _settingsService.Current.EnableDwmBackdropBlur);
+                _settingsService.Current.EnableDwmBackdropBlur,
+                isError: false,
+                allowAiButton: _settingsService.Current.EnableLocalAiAssistant);
         }
         catch (Exception ex)
         {
@@ -459,17 +560,19 @@ public partial class App : System.Windows.Application
 
     private async Task StartAiFeedFromSelectionAsync()
     {
-        if (_isTranslatingClipboard || _settingsService is null || _aiPopup is null)
+        if (_isFeedingAi || _settingsService is null || _aiPopup is null)
             return;
 
-        _isTranslatingClipboard = true;
+        _isFeedingAi = true;
         try
         {
+            uint seqBefore = GetClipboardSequenceNumber();
             TryTriggerCopySelection();
             await Task.Delay(95);
+            uint seqAfter = GetClipboardSequenceNumber();
 
             string text = string.Empty;
-            if (System.Windows.Clipboard.ContainsText())
+            if (seqAfter != seqBefore && System.Windows.Clipboard.ContainsText())
                 text = System.Windows.Clipboard.GetText().Trim();
 
             Win32Api.GetCursorPos(out var pt);
@@ -485,7 +588,7 @@ public partial class App : System.Windows.Application
         }
         finally
         {
-            _isTranslatingClipboard = false;
+            _isFeedingAi = false;
         }
     }
 
@@ -516,10 +619,52 @@ public partial class App : System.Windows.Application
         catch { }
     }
 
+    private void OpenImageFileInAiPopup(string imagePath)
+    {
+        if (_aiPopup is null || string.IsNullOrWhiteSpace(imagePath))
+            return;
+
+        var region = ScreenCaptureService.LoadFromImageFile(imagePath);
+        if (region is null)
+        {
+            if (_islandViewModel is not null)
+                _islandViewModel.StatusMessage = LocalizationService.Pick(
+                    "Failed to read image file.",
+                    "Не удалось прочитать изображение.");
+            return;
+        }
+
+        ShowCapturedRegionInAiPopup(region);
+    }
+
+    private void CollapseExpandedIslandIfOpen()
+    {
+        if (_islandWindow is not null && _islandViewModel is not null && _settingsService is not null &&
+            _islandViewModel.State == IslandState.Expanded)
+        {
+            var collapsedState = _settingsService.Current.AutoHideIsland ? IslandState.Hidden : IslandState.Compact;
+            _islandWindow.SetIslandState(collapsedState, animate: true);
+        }
+    }
+
+    private void ShowCapturedRegionInAiPopup(CapturedScreenRegion region)
+    {
+        if (_aiPopup is null) return;
+        CollapseExpandedIslandIfOpen();
+
+        Win32Api.GetCursorPos(out var pt);
+        var dpiScale = _islandWindow is not null ? VisualTreeHelper.GetDpi(_islandWindow) : new DpiScale(1, 1);
+        var physRect = new Int32Rect(pt.X - 10, pt.Y - 10, 20, 20);
+        var dipRect = new Rect(pt.X / dpiScale.DpiScaleX, pt.Y / dpiScale.DpiScaleY, 12, 12);
+        _aiPopup.ShowWithImageForQuestion(region, sourceText: null, physRect, dipRect);
+    }
+
     private void OpenSmartClipboardWindow()
     {
         if (_smartClipboard is null || _settingsService is null)
             return;
+
+        CollapseExpandedIslandIfOpen();
 
         if (_clipboardWindow is not null && _clipboardWindow.IsLoaded)
         {
@@ -528,6 +673,7 @@ public partial class App : System.Windows.Application
         }
 
         _clipboardWindow = new SmartClipboardWindow(_smartClipboard, _settingsService);
+        _clipboardWindow.SendImageToAiRequested += ShowCapturedRegionInAiPopup;
         _clipboardWindow.Closed += (_, _) => _clipboardWindow = null;
         _clipboardWindow.Show();
         _clipboardWindow.Activate();
@@ -596,7 +742,7 @@ public partial class App : System.Windows.Application
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(LocalizationService.Pick("Translate screen region", "Перевести область экрана"), null, (_, _) => _ = StartLassoTranslationAsync());
         menu.Items.Add(LocalizationService.Pick("Translate clipboard", "Перевести буфер обмена"), null, (_, _) => _ = StartClipboardTranslationAsync());
-        menu.Items.Add(LocalizationService.Pick("AI Assistant (Qwen 3B)", "ИИ-ассистент (Qwen 3B)"), null, (_, _) => _aiPopup?.ShowInteractiveNearCursor());
+        menu.Items.Add(LocalizationService.Pick("AI Assistant (Local AI)", "ИИ-ассистент (Локальный ИИ)"), null, (_, _) => _aiPopup?.ShowInteractiveNearCursor());
         menu.Items.Add(LocalizationService.Pick("Smart Clipboard", "Умный буфер обмена"), null, (_, _) => OpenSmartClipboardWindow());
         menu.Items.Add(LocalizationService.Pick("Settings", "Настройки"), null, (_, _) => OpenSettingsWindow());
         menu.Items.Add(new WinForms.ToolStripSeparator());
@@ -608,11 +754,17 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        LocalizationService.LanguageChanged -= OnLanguageChanged;
         _wakeListenerCts?.Cancel();
         _wakeListenerCts?.Dispose();
-        _wakeEvent?.Dispose();
+        try { _wakeEvent?.Dispose(); } catch { }
 
         _hotkeyService?.Dispose();
+        try { _translationPopup?.ClosePermanently(); } catch { }
+        try { _aiPopup?.ClosePermanently(); } catch { }
+        try { _clipboardWindow?.Close(); } catch { }
+        try { _settingsWindow?.Close(); } catch { }
+        try { _islandWindow?.ClosePermanently(); } catch { }
         _smartClipboard?.Dispose();
         _audioEndpointMonitor?.Dispose();
         _localLlmService?.Dispose();

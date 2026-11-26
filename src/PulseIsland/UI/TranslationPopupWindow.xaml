@@ -8,10 +8,57 @@
         ShowInTaskbar="False"
         SizeToContent="WidthAndHeight"
         ResizeMode="NoResize"
-        MaxWidth="450">
+        MaxWidth="490">
 
     <Window.Resources>
         <Geometry x:Key="CloseIconGeometry">M 1,1 L 9,9 M 9,1 L 1,9</Geometry>
+        <Geometry x:Key="SwapLangGeometry">M 1.5,3.5 L 10.5,3.5 M 8,1 L 10.5,3.5 L 8,6 M 10.5,8.5 L 1.5,8.5 M 4,6 L 1.5,8.5 L 4,11</Geometry>
+
+        <Style x:Key="PopupScrollThumbStyle" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="ThumbBorder" Background="{DynamicResource ThemeScrollThumbBrush}" CornerRadius="3" Margin="2,0" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeScrollThumbHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeAccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="Width" Value="7" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Border Background="{DynamicResource ThemeScrollTrackBrush}" CornerRadius="3.5" Margin="1.5,2" />
+                            <Track x:Name="PART_Track" IsDirectionReversed="True" Margin="0,2">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" IsHitTestVisible="False" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource PopupScrollThumbStyle}" />
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" IsHitTestVisible="False" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
         <Style x:Key="GlassActionButtonStyle" TargetType="Button">
             <Setter Property="Foreground" Value="{DynamicResource ThemeTextPrimaryBrush}" />
@@ -90,29 +137,68 @@
                         Background="{DynamicResource ThemeReflectionBrush}"
                         IsHitTestVisible="False" />
 
-                <!-- Header -->
-                <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                    <Border DockPanel.Dock="Left"
-                            Padding="10,3"
-                            CornerRadius="10"
-                            Background="{DynamicResource ThemeHighlightBrush}"
-                            BorderBrush="{DynamicResource ThemeAccentBrush}"
-                            BorderThickness="1">
-                        <TextBlock x:Name="LangBadgeText"
-                                   Text="AUTO → RU"
-                                   Foreground="{DynamicResource ThemeTextPrimaryBrush}"
-                                   FontSize="11"
-                                   FontWeight="SemiBold" />
-                    </Border>
+                <!-- Header (2-column Grid so buttons never collide or clip) -->
+                <Grid Grid.Row="0" Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Grid Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0"
+                                HorizontalAlignment="Left"
+                                Padding="8,3"
+                                CornerRadius="10"
+                                Background="{DynamicResource ThemeHighlightBrush}"
+                                BorderBrush="{DynamicResource ThemeAccentBrush}"
+                                BorderThickness="1"
+                                VerticalAlignment="Center">
+                            <TextBlock x:Name="LangBadgeText"
+                                       Text="AUTO → EN"
+                                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                                       FontSize="10.5"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                        </Border>
+                        <Button x:Name="SwapDirectionButton"
+                                Grid.Column="1"
+                                Click="OnSwapDirectionClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="7,4"
+                                Margin="5,0,0,0"
+                                VerticalAlignment="Center"
+                                ToolTip="{DynamicResource Loc_TransPopup_SwapTooltip}">
+                            <Path Data="{StaticResource SwapLangGeometry}"
+                                  Stroke="{DynamicResource ThemeAccentBrush}"
+                                  StrokeThickness="1.4"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  Width="11" Height="11"
+                                  Stretch="Uniform" />
+                        </Button>
+                    </Grid>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Button x:Name="AskAiButton"
+                                Content="{DynamicResource Loc_TransPopup_AskAiBtn}"
+                                Click="OnAskAiClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="9,4"
+                                Margin="0,0,5,0"
+                                FontSize="11"
+                                ToolTip="{DynamicResource Loc_TransPopup_AskAiTooltip}" />
                         <Button x:Name="CopyButton"
                                 Content="{DynamicResource Loc_Copy}"
                                 Click="OnCopyClick"
                                 Style="{StaticResource GlassActionButtonStyle}"
-                                Padding="11,4"
-                                Margin="0,0,6,0"
-                                FontSize="11.5" />
+                                Padding="9,4"
+                                Margin="0,0,5,0"
+                                FontSize="11" />
                         <Button Click="OnCloseClick"
                                 Style="{StaticResource GlassActionButtonStyle}"
                                 Width="26"
@@ -128,19 +214,23 @@
                                   Stretch="Uniform" />
                         </Button>
                     </StackPanel>
-                </DockPanel>
+                </Grid>
 
-                <!-- Translated text -->
-                <TextBlock x:Name="TranslatedTextBlock"
-                           Grid.Row="1"
-                           TextWrapping="Wrap"
-                           Foreground="{DynamicResource ThemeTextPrimaryBrush}"
-                           FontSize="14.5"
-                           LineHeight="21"
-                           FontWeight="Medium"
-                           FontFamily="Segoe UI" />
+                <!-- Translated text (scrollable so very long translations never overflow screen) -->
+                <ScrollViewer Grid.Row="1"
+                              MaxHeight="280"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <TextBlock x:Name="TranslatedTextBlock"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource ThemeTextPrimaryBrush}"
+                               FontSize="14.5"
+                               LineHeight="21"
+                               FontWeight="Medium"
+                               FontFamily="Segoe UI" />
+                </ScrollViewer>
 
-                <!-- Original text snippet -->
+                <!-- Original text snippet with Copy Original button -->
                 <Border x:Name="SourceTextBorder"
                         Grid.Row="2"
                         Margin="0,10,0,0"
@@ -149,13 +239,25 @@
                         Background="{DynamicResource ThemeCardBgBrush}"
                         BorderBrush="{DynamicResource ThemeCardBorderBrush}"
                         BorderThickness="1">
-                    <TextBlock x:Name="SourceTextBlock"
-                               TextWrapping="Wrap"
-                               MaxHeight="64"
-                               TextTrimming="CharacterEllipsis"
-                               Foreground="{DynamicResource ThemeTextSecondaryBrush}"
-                               FontSize="11.5"
-                               FontFamily="Segoe UI" />
+                    <DockPanel>
+                        <Button x:Name="CopySourceButton"
+                                DockPanel.Dock="Right"
+                                Content="{DynamicResource Loc_CopyOriginal}"
+                                Click="OnCopySourceClick"
+                                Style="{StaticResource GlassActionButtonStyle}"
+                                Padding="8,3"
+                                Margin="8,0,0,0"
+                                FontSize="10.5"
+                                VerticalAlignment="Top" />
+                        <TextBlock x:Name="SourceTextBlock"
+                                   TextWrapping="Wrap"
+                                   MaxHeight="64"
+                                   TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource ThemeTextSecondaryBrush}"
+                                   FontSize="11.5"
+                                   FontFamily="Segoe UI"
+                                   VerticalAlignment="Center" />
+                    </DockPanel>
                 </Border>
             </Grid>
         </Border>
